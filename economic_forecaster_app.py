@@ -9,7 +9,7 @@ import streamlit as st
 MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
 MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
-MAX_WEEKLY_SHIFT = 0.20
+MAX_WEEKLY_SHIFT = 0.15
 
 
 @st.cache_resource

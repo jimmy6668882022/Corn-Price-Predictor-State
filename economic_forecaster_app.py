@@ -6,10 +6,10 @@ import pandas as pd
 import streamlit as st
 
 
-MODEL_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair.pkl"
-METADATA_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair_metadata.pkl"
-MASTER_SHEET_PATH = "/Users/Jiadong.Chen/Desktop/MSEF/Master Sheet for MSEF.csv"
-MAX_WEEKLY_SHIFT = 0.20
+MODEL_PATH = "rf_model_state_fair.pkl"
+METADATA_PATH = "rf_model_state_fair_metadata.pkl"
+MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
+MAX_WEEKLY_SHIFT = 0.15
 
 
 @st.cache_resource

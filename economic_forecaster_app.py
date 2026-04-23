@@ -9,7 +9,7 @@ import streamlit as st
 MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
 MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
-MAX_WEEKLY_SHIFT = 0.15
+MAX_WEEKLY_SHIFT = 0.20
 
 
 @st.cache_resource
@@ -199,7 +199,7 @@ with st.sidebar.expander("How to calculate harvest values"):
 
 st.sidebar.markdown("---")
 clip_predictions = st.sidebar.checkbox(
-    "Cap weekly deviation at ±$0.15",
+    "Cap weekly deviation at ±$0.20",
     value=True,
     help="Useful as a realism guardrail for multi-week chained forecasts.",
 )

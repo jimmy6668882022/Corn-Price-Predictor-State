@@ -199,7 +199,7 @@ with st.sidebar.expander("How to calculate harvest values"):
 
 st.sidebar.markdown("---")
 clip_predictions = st.sidebar.checkbox(
-    "Cap weekly deviation at ±$0.20",
+    "Cap weekly deviation at ±$0.15",
     value=True,
     help="Useful as a realism guardrail for multi-week chained forecasts.",
 )

@@ -179,7 +179,7 @@ clip_predictions = st.sidebar.checkbox(
 )
 
 # Only show the complex model text in the Advanced View
-if view_mode == "📊 Advanced View (For Analysts)":
+if view_mode == "📊 Advanced View":
     left_col, right_col = st.columns([1.1, 0.9])
     with left_col:
         st.subheader("Model Logic")
@@ -260,7 +260,7 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
     # ==========================================
     # DISPLAY FOR SIMPLE VIEW
     # ==========================================
-    if view_mode == "👨‍🌾 Simple View (For Farmers)":
+    if view_mode == "👨‍🌾 Simple View":
         st.header("🎯 Your Forecast Recommendation")
         st.subheader(f"{recommendation}")
         st.write(f"**Why?** {reason}")
@@ -276,7 +276,7 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
     # ==========================================
     # DISPLAY FOR ADVANCED VIEW
     # ==========================================
-    elif view_mode == "📊 Advanced View (For Analysts)":
+    elif view_mode == "📊 Advanced View":
         st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 

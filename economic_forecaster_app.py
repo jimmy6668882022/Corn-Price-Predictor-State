@@ -1,16 +1,13 @@
 import pickle
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+import plotly.express as px  # NEW: For interactive charts!
 
 MODEL_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair.pkl"
 METADATA_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair_metadata.pkl"
 MASTER_SHEET_PATH = "/Users/Jiadong.Chen/Desktop/MSEF/Master Sheet for MSEF.csv"
 MAX_WEEKLY_SHIFT = 0.20
-
 
 @st.cache_resource
 def load_model_assets():
@@ -39,13 +36,11 @@ def load_model_assets():
 
     return model, metadata, seasonality_map
 
-
 def parse_recent_prices(raw_text, window_size):
     prices = [float(piece.strip()) for piece in raw_text.split(",") if piece.strip()]
     if len(prices) < window_size:
         raise ValueError(f"Enter at least {window_size} recent prices.")
     return prices
-
 
 def build_feature_row(
     week_num,
@@ -67,7 +62,6 @@ def build_feature_row(
             "Demand_Livestock": [demand_livestock],
         }
     )
-
 
 st.set_page_config(page_title="Harvest or Hold? Forecaster", layout="wide")
 
@@ -102,7 +96,6 @@ view_mode = st.radio(
     horizontal=True
 )
 st.markdown("---")
-
 
 # Sidebar remains visible for both so data can be inputted
 st.sidebar.header("Market Control Panel")
@@ -196,110 +189,133 @@ if view_mode == "📊 Advanced View":
 
 
 if st.button("🚀 Run Chained Forecast", type="primary"):
+    
+    # NEW: Global Error Handling to prevent hard crashes
     try:
-        recent_prices = parse_recent_prices(recent_prices_input, window_size)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-        
-    initial_average_price = np.mean(recent_prices[-window_size:])
-    forecast_rows = []
+        try:
+            recent_prices = parse_recent_prices(recent_prices_input, window_size)
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
+            
+        initial_average_price = np.mean(recent_prices[-window_size:])
+        forecast_rows = []
 
-    for week in range(current_week + 1, target_week + 1):
-        moving_avg = float(np.mean(recent_prices[-window_size:]))
-        seasonality_value = (
-            float(seasonality_map.get(week, manual_seasonality))
-            if use_auto_seasonality
-            else float(manual_seasonality)
-        )
+        for week in range(current_week + 1, target_week + 1):
+            moving_avg = float(np.mean(recent_prices[-window_size:]))
+            seasonality_value = (
+                float(seasonality_map.get(week, manual_seasonality))
+                if use_auto_seasonality
+                else float(manual_seasonality)
+            )
 
-        future_conditions = build_feature_row(
-            week_num=week,
-            seasonality=seasonality_value,
-            weekly_bushels=weekly_bushels,
-            cumulative_harvest=cumulative_harvest,
-            is_harvesting=is_harvesting,
-            demand_ethanol=demand_ethanol,
-            demand_livestock=demand_livestock,
-        )[feature_columns]
+            future_conditions = build_feature_row(
+                week_num=week,
+                seasonality=seasonality_value,
+                weekly_bushels=weekly_bushels,
+                cumulative_harvest=cumulative_harvest,
+                is_harvesting=is_harvesting,
+                demand_ethanol=demand_ethanol,
+                demand_livestock=demand_livestock,
+            )[feature_columns]
 
-        raw_deviation = float(rf_model.predict(future_conditions)[0])
-        deviation = (
-            float(np.clip(raw_deviation, -MAX_WEEKLY_SHIFT, MAX_WEEKLY_SHIFT))
-            if clip_predictions
-            else raw_deviation
-        )
-        predicted_price = moving_avg + deviation
-        recent_prices.append(predicted_price)
+            raw_deviation = float(rf_model.predict(future_conditions)[0])
+            deviation = (
+                float(np.clip(raw_deviation, -MAX_WEEKLY_SHIFT, MAX_WEEKLY_SHIFT))
+                if clip_predictions
+                else raw_deviation
+            )
+            predicted_price = moving_avg + deviation
+            recent_prices.append(predicted_price)
 
-        forecast_rows.append(
-            {
-                "Week": week,
-                "Seasonality": seasonality_value,
-                "Momentum": round(moving_avg, 4),
-                "Predicted Deviation": round(deviation, 4),
-                "Predicted Price": round(predicted_price, 4),
-            }
-        )
+            forecast_rows.append(
+                {
+                    "Week": week,
+                    "Seasonality": seasonality_value,
+                    "Momentum": round(moving_avg, 4),
+                    "Predicted Deviation": round(deviation, 4),
+                    "Predicted Price": round(predicted_price, 4),
+                }
+            )
 
-    forecast_df = pd.DataFrame(forecast_rows)
-    final_price = forecast_df.iloc[-1]['Predicted Price']
-    price_change = final_price - initial_average_price
+        forecast_df = pd.DataFrame(forecast_rows)
+        final_price = forecast_df.iloc[-1]['Predicted Price']
+        price_change = final_price - initial_average_price
 
-    # Determine Recommendation Logic
-    if price_change >= 0.05:
-        recommendation = "HOLD 🛑"
-        reason = "Prices are projected to trend upward. Waiting could yield higher profits."
-    elif price_change <= -0.05:
-        recommendation = "HARVEST / SELL NOW 🚜"
-        reason = "Prices are projected to drop. Locking in current rates is advised."
-    else:
-        recommendation = "MONITOR 🔍"
-        reason = "Prices are projected to remain relatively stable. Keep an eye on market shifts."
+        # Determine Recommendation Logic
+        if price_change >= 0.05:
+            recommendation = "HOLD 🛑"
+            reason = "Prices are projected to trend upward. Waiting could yield higher profits."
+        elif price_change <= -0.05:
+            recommendation = "HARVEST / SELL NOW 🚜"
+            reason = "Prices are projected to drop. Locking in current rates is advised."
+        else:
+            recommendation = "MONITOR 🔍"
+            reason = "Prices are projected to remain relatively stable. Keep an eye on market shifts."
 
-    # ==========================================
-    # DISPLAY FOR SIMPLE VIEW
-    # ==========================================
-    if view_mode == "👨‍🌾 Simple View":
-        st.header("🎯 Your Forecast Recommendation")
-        st.subheader(f"{recommendation}")
-        st.write(f"**Why?** {reason}")
-        
-        st.metric(
-            label=f"Projected Price for Week {target_week}", 
-            value=f"${final_price:.2f}", 
-            delta=f"{price_change:.2f} vs current average"
-        )
-        
-        st.info("Switch to the 'Advanced View' at the top of the page to see the week-by-week data breakdown and price trajectory charts.")
+        # ==========================================
+        # DISPLAY FOR SIMPLE VIEW
+        # ==========================================
+        if view_mode == "👨‍🌾 Simple View":
+            st.header("🎯 Your Forecast Recommendation")
+            st.subheader(f"{recommendation}")
+            st.write(f"**Why?** {reason}")
+            
+            st.metric(
+                label=f"Projected Price for Week {target_week}", 
+                value=f"${final_price:.2f}", 
+                delta=f"{price_change:.2f} vs current average"
+            )
+            
+            st.info("Switch to the 'Advanced View' at the top of the page to see the week-by-week data breakdown and price trajectory charts.")
 
-    # ==========================================
-    # DISPLAY FOR ADVANCED VIEW
-    # ==========================================
-    elif view_mode == "📊 Advanced View":
-        st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
-        st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+        # ==========================================
+        # DISPLAY FOR ADVANCED VIEW
+        # ==========================================
+        elif view_mode == "📊 Advanced View":
+            st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
+            
+            # 1. Show Data Table
+            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+            
+            # Transition Arrow
+            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
+            
+            # 2. Show Success Metric
+            st.success(f"Final projected price for Week {target_week}: ${final_price:.2f}")
 
-        st.success(f"Final projected price for Week {target_week}: ${final_price:.2f}")
+            # Transition Arrow
+            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
 
-        fig, ax = plt.subplots(figsize=(10, 4.5))
-        ax.plot(
-            forecast_df["Week"],
-            forecast_df["Predicted Price"],
-            marker="o",
-            color="#C56A1A",
-            linewidth=2.5,
-        )
-        ax.set_title("Forecasted Price Trajectory", fontweight="bold")
-        ax.set_xlabel("Week Number")
-        ax.set_ylabel("Price ($/Bushel)")
-        ax.grid(True, linestyle="--", alpha=0.6)
-        st.pyplot(fig)
+            # 3. NEW: Interactive Plotly Chart
+            fig = px.line(
+                forecast_df, 
+                x="Week", 
+                y="Predicted Price", 
+                title="Forecasted Price Trajectory",
+                markers=True,
+                labels={"Predicted Price": "Price ($/Bushel)", "Week": "Week Number"}
+            )
+            
+            # Polish the chart appearance
+            fig.update_traces(line_color="#C56A1A", line_width=3, marker=dict(size=8, color="#C56A1A"))
+            fig.update_layout(
+                xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'),
+                yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$"),
+                hovermode="x unified" # Shows a clean tooltip when hovering
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
 
-        st.caption(
-            "Interpretation: the moving average sets the short-term baseline, and the model "
-            "estimates whether economic conditions push price above or below that baseline."
-        )
+            st.caption(
+                "Interpretation: the moving average sets the short-term baseline, and the model "
+                "estimates whether economic conditions push price above or below that baseline."
+            )
+            
+    # NEW: Catch-all for API / Data errors
+    except Exception as e:
+        st.error("⚠️ System Interruption Detected")
+        st.info("⏳ We are currently waiting for the newest/updated data to sync, or a required field is missing. Please check back later or verify your inputs.")
 
 # ==========================================
 # GLOBAL DISCLAIMER WARNING
@@ -307,6 +323,6 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
 st.markdown("---")
 st.warning(
     "**Disclaimer:** These projections are estimates based on historical trends and current inputs. "
-    "They are not guaranteed. The model cannot anticipate 'black swan' events, such as extreme "
-    "weather disasters, unpredictable geopolitical shifts, or sudden market crashes."
+    "They are not guaranteed to be 100% accurate. The model cannot effectively predict outliers caused "
+    "by 'black swan' events, such as extreme weather disasters, unpredictable geopolitical shifts, or sudden market crashes."
 )

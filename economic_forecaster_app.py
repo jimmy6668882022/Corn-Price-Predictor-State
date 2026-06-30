@@ -6,7 +6,7 @@ import plotly.express as px  # NEW: For interactive charts!
 
 MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
-MASTER_SHEET_PATH = "Master Sheet for MSEF.csv"
+MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
 MAX_WEEKLY_SHIFT = 0.20
 
 @st.cache_resource

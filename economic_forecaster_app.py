@@ -98,7 +98,7 @@ st.title("🌽 Harvest or Hold? Nebraska Corn Market Forecaster")
 # ==========================================
 view_mode = st.radio(
     "Select Dashboard View:",
-    ["👨‍🌾 Simple View (For Farmers)", "📊 Advanced View (For Analysts)"],
+    ["👨‍🌾 Simple View", "📊 Advanced View"],
     horizontal=True
 )
 st.markdown("---")

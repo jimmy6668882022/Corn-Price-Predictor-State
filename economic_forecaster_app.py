@@ -6,9 +6,9 @@ import pandas as pd
 import streamlit as st
 
 
-MODEL_PATH = "rf_model_state_fair.pkl"
-METADATA_PATH = "rf_model_state_fair_metadata.pkl"
-MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
+MODEL_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair.pkl"
+METADATA_PATH = "/Users/Jiadong.Chen/Documents/New project 2/rf_model_state_fair_metadata.pkl"
+MASTER_SHEET_PATH = "/Users/Jiadong.Chen/Desktop/MSEF/Master Sheet for MSEF.csv"
 MAX_WEEKLY_SHIFT = 0.20
 
 
@@ -92,12 +92,19 @@ feature_columns = metadata.get(
 )
 
 st.title("🌽 Harvest or Hold? Nebraska Corn Market Forecaster")
-st.markdown(
-    "This version uses an economics-centered model: a 4-week price momentum baseline "
-    "plus supply, demand, and seasonality to estimate how far the next price may drift "
-    "above or below that momentum."
-)
 
+# ==========================================
+# NEW: SIMPLE VS ADVANCED VIEW TOGGLE
+# ==========================================
+view_mode = st.radio(
+    "Select Dashboard View:",
+    ["👨‍🌾 Simple View (For Farmers)", "📊 Advanced View (For Analysts)"],
+    horizontal=True
+)
+st.markdown("---")
+
+
+# Sidebar remains visible for both so data can be inputted
 st.sidebar.header("Market Control Panel")
 
 current_week = st.sidebar.slider("Current Week Number", min_value=1, max_value=51, value=6)
@@ -126,7 +133,6 @@ recent_prices_input = st.sidebar.text_input(
 st.sidebar.caption(
     "Use East Nebraska prices to stay consistent with the model's historical data."
 )
-st.sidebar.markdown("[Latest USDA AMS Prices](https://mymarketnews.ams.usda.gov/viewReport/3225)")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Seasonality")
@@ -135,10 +141,6 @@ manual_seasonality = st.sidebar.number_input(
     "Manual Seasonality Override",
     value=float(seasonality_map.get(current_week, 4.50)),
     format="%.2f",
-    help="Used only if auto-fill is turned off.",
-)
-st.sidebar.markdown(
-    "[Master Spreadsheet Reference](https://docs.google.com/spreadsheets/d/1H_GvT5G7hVf1jKdgth3KPQGPs6svWit6x7ozwhnGmMA/edit?usp=sharing)"
 )
 
 st.sidebar.markdown("---")
@@ -153,23 +155,6 @@ demand_livestock = st.sidebar.number_input(
     value=2500000,
     step=10000,
 )
-st.sidebar.markdown(
-    "[Latest Ethanol Data](https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=W_EPOOXE_YOP_R20_MBBLD&f=W)"
-)
-
-with st.sidebar.expander("How to find livestock data"):
-    st.markdown(
-        """
-1. Open [USDA QuickStats](https://quickstats.nass.usda.gov/).
-2. Choose `Program: Survey`.
-3. Choose `Sector: Animals & Products`.
-4. Choose `Group: Livestock`.
-5. Choose `Commodity: Cattle`.
-6. Choose `Category: Inventory`.
-7. Choose `Data Item: CATTLE, ON FEED - INVENTORY`.
-8. Set `Geographic Level: State` and choose `Nebraska`.
-        """
-    )
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Supply Factors")
@@ -187,38 +172,28 @@ cumulative_harvest = st.sidebar.number_input(
     format="%.0f",
 )
 
-with st.sidebar.expander("How to calculate harvest values"):
-    st.markdown(
-        """
-1. Open [USDA QuickStats](https://quickstats.nass.usda.gov/).
-2. Find Nebraska corn harvest progress measured in percent harvested.
-3. Multiply the cumulative harvest percentage by annual Nebraska corn production.
-4. Subtract last week's cumulative harvest from this week's cumulative harvest.
-        """
-    )
-
 st.sidebar.markdown("---")
 clip_predictions = st.sidebar.checkbox(
     "Cap weekly deviation at ±$0.20",
     value=True,
-    help="Useful as a realism guardrail for multi-week chained forecasts.",
 )
 
-left_col, right_col = st.columns([1.1, 0.9])
+# Only show the complex model text in the Advanced View
+if view_mode == "📊 Advanced View (For Analysts)":
+    left_col, right_col = st.columns([1.1, 0.9])
+    with left_col:
+        st.subheader("Model Logic")
+        st.markdown(
+            """
+    - Baseline: 4-week moving average of recent prices
+    - Deviation driver: supply, demand, and seasonality inputs
+    - Forecast style: chained week-by-week projection
+            """
+        )
+    with right_col:
+        st.subheader("Model Inputs Used")
+        st.code(", ".join(feature_columns), language="text")
 
-with left_col:
-    st.subheader("Model Logic")
-    st.markdown(
-        """
-- Baseline: 4-week moving average of recent prices
-- Deviation driver: supply, demand, and seasonality inputs
-- Forecast style: chained week-by-week projection
-        """
-    )
-
-with right_col:
-    st.subheader("Model Inputs Used")
-    st.code(", ".join(feature_columns), language="text")
 
 if st.button("🚀 Run Chained Forecast", type="primary"):
     try:
@@ -226,7 +201,8 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
-
+        
+    initial_average_price = np.mean(recent_prices[-window_size:])
     forecast_rows = []
 
     for week in range(current_week + 1, target_week + 1):
@@ -267,27 +243,60 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
         )
 
     forecast_df = pd.DataFrame(forecast_rows)
+    final_price = forecast_df.iloc[-1]['Predicted Price']
+    price_change = final_price - initial_average_price
 
-    st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
-    st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+    # Determine Recommendation Logic
+    if price_change >= 0.05:
+        recommendation = "HOLD 🛑"
+        reason = "Prices are projected to trend upward. Waiting could yield higher profits."
+    elif price_change <= -0.05:
+        recommendation = "HARVEST / SELL NOW 🚜"
+        reason = "Prices are projected to drop. Locking in current rates is advised."
+    else:
+        recommendation = "MONITOR 🔍"
+        reason = "Prices are projected to remain relatively stable. Keep an eye on market shifts."
 
-    st.success(f"Final projected price for Week {target_week}: ${forecast_df.iloc[-1]['Predicted Price']:.2f}")
+    # ==========================================
+    # DISPLAY FOR SIMPLE VIEW
+    # ==========================================
+    if view_mode == "👨‍🌾 Simple View (For Farmers)":
+        st.header("🎯 Your Forecast Recommendation")
+        st.subheader(f"{recommendation}")
+        st.write(f"**Why?** {reason}")
+        
+        st.metric(
+            label=f"Projected Price for Week {target_week}", 
+            value=f"${final_price:.2f}", 
+            delta=f"{price_change:.2f} vs current average"
+        )
+        
+        st.info("Switch to the 'Advanced View' at the top of the page to see the week-by-week data breakdown and price trajectory charts.")
 
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(
-        forecast_df["Week"],
-        forecast_df["Predicted Price"],
-        marker="o",
-        color="#C56A1A",
-        linewidth=2.5,
-    )
-    ax.set_title("Forecasted Price Trajectory", fontweight="bold")
-    ax.set_xlabel("Week Number")
-    ax.set_ylabel("Price ($/Bushel)")
-    ax.grid(True, linestyle="--", alpha=0.6)
-    st.pyplot(fig)
+    # ==========================================
+    # DISPLAY FOR ADVANCED VIEW
+    # ==========================================
+    elif view_mode == "📊 Advanced View (For Analysts)":
+        st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
+        st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
-    st.caption(
-        "Interpretation: the moving average sets the short-term baseline, and the model "
-        "estimates whether economic conditions push price above or below that baseline."
-    )
+        st.success(f"Final projected price for Week {target_week}: ${final_price:.2f}")
+
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        ax.plot(
+            forecast_df["Week"],
+            forecast_df["Predicted Price"],
+            marker="o",
+            color="#C56A1A",
+            linewidth=2.5,
+        )
+        ax.set_title("Forecasted Price Trajectory", fontweight="bold")
+        ax.set_xlabel("Week Number")
+        ax.set_ylabel("Price ($/Bushel)")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        st.pyplot(fig)
+
+        st.caption(
+            "Interpretation: the moving average sets the short-term baseline, and the model "
+            "estimates whether economic conditions push price above or below that baseline."
+        )

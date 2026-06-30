@@ -94,7 +94,7 @@ feature_columns = metadata.get(
 st.title("🌽 Harvest or Hold? Nebraska Corn Market Forecaster")
 
 # ==========================================
-# NEW: SIMPLE VS ADVANCED VIEW TOGGLE
+# SIMPLE VS ADVANCED VIEW TOGGLE
 # ==========================================
 view_mode = st.radio(
     "Select Dashboard View:",
@@ -300,3 +300,13 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
             "Interpretation: the moving average sets the short-term baseline, and the model "
             "estimates whether economic conditions push price above or below that baseline."
         )
+
+# ==========================================
+# GLOBAL DISCLAIMER WARNING
+# ==========================================
+st.markdown("---")
+st.warning(
+    "**Disclaimer:** These projections are estimates based on historical trends and current inputs. "
+    "They are not guaranteed. The model cannot anticipate 'black swan' events, such as extreme "
+    "weather disasters, unpredictable geopolitical shifts, or sudden market crashes."
+)

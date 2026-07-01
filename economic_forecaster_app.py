@@ -11,18 +11,52 @@ METADATA_PATH = "rf_model_state_fair_metadata.pkl"
 MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
 MAX_WEEKLY_SHIFT = 0.20
 USDA_API_KEY = "F8E7FAB6-C2FA-3375-8A8B-7996AC634920"
-NE_ANNUAL_PRODUCTION = 1800000000.0  # Approx Nebraska Corn Bushels
 
 # ==========================================
 # AUTO DATA PIPELINE (USDA API)
 # ==========================================
-@st.cache_data(ttl=3600)  # Caches the data for 1 hour so your app stays lightning fast!
-def fetch_live_harvest_progress():
+@st.cache_data(ttl=3600)  
+def fetch_live_supply_data():
+    """
+    Fetches harvest progress, LAST WEEK's progress, and total annual production.
+    Returns: (harvest_pct, last_week_pct, total_production, status_message)
+    """
     current_year = datetime.now().year
     current_week_num = datetime.now().isocalendar()[1]
-    
     url = "https://quickstats.nass.usda.gov/api/api_GET/"
-    payload = {
+    
+    # Baseline fallback values
+    harvest_pct = 0.0
+    last_week_pct = 0.0
+    total_production = 1800000000.0  
+    status_msg = ""
+    
+    # --- 1. FETCH TOTAL ANNUAL PRODUCTION ---
+    prod_payload = {
+        "key": USDA_API_KEY,
+        "source_desc": "SURVEY",
+        "sector_desc": "CROPS",
+        "group_desc": "FIELD CROPS",
+        "commodity_desc": "CORN",
+        "statisticcat_desc": "PRODUCTION",
+        "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+        "state_name": "NEBRASKA",
+        "freq_desc": "ANNUAL",
+        "format": "JSON"
+    }
+    
+    try:
+        prod_response = requests.get(url, params=prod_payload, timeout=10)
+        if prod_response.status_code == 200:
+            prod_records = prod_response.json().get('data', [])
+            if prod_records:
+                newest_prod = max(prod_records, key=lambda x: x['year'])
+                total_production = float(newest_prod['Value'].replace(',', ''))
+    except Exception:
+        pass  
+
+    # --- 2. FETCH CURRENT & LAST WEEK PROGRESS ---
+    harvest_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
         "sector_desc": "CROPS",
@@ -36,11 +70,12 @@ def fetch_live_harvest_progress():
     }
     
     try:
-        response = requests.get(url, params=payload, timeout=10)
+        response = requests.get(url, params=harvest_payload, timeout=10)
         if response.status_code == 200:
             records = response.json().get('data', [])
             
             exact_match_value = None
+            last_week_match_value = None
             highest_value_this_year = 0
             
             for record in records:
@@ -49,21 +84,32 @@ def fetch_live_harvest_progress():
                 
                 if record_val > highest_value_this_year:
                     highest_value_this_year = record_val
+                    
                 if record_week == current_week_num:
                     exact_match_value = record_val
+                if record_week == current_week_num - 1:
+                    last_week_match_value = record_val
             
             # Apply dynamic fallbacks
             if exact_match_value is not None:
-                return exact_match_value / 100.0, f"🚜 Active Harvest: Using live USDA progress report ({exact_match_value}%)."
+                harvest_pct = exact_match_value / 100.0
+                last_week_pct = (last_week_match_value / 100.0) if last_week_match_value is not None else 0.0
+                status_msg = f"🚜 Active Harvest: Using live USDA progress report ({exact_match_value}%)."
             elif len(records) == 0 or highest_value_this_year == 0:
-                return 0.0, "🌱 Pre-Harvest Season: No USDA reports published yet this year. Defaulting to 0%."
+                harvest_pct = 0.0
+                last_week_pct = 0.0
+                status_msg = "🌱 Pre-Harvest Season: No USDA reports published yet this year. Defaulting to 0%."
             else:
-                return 1.0, f"❄️ Post-Harvest Season: USDA stopped reporting after hitting {highest_value_this_year}%. Defaulting to 100%."
+                harvest_pct = 1.0
+                last_week_pct = 1.0
+                status_msg = f"❄️ Post-Harvest Season: USDA reporting ended after hitting {highest_value_this_year}%. Defaulting to 100%."
         else:
-            return 0.0, "⚠️ Could not connect to USDA API. Defaulting to 0%."
+            status_msg = "⚠️ Could not connect to USDA API. Using baseline defaults."
             
     except Exception:
-        return 0.0, "⚠️ Network error trying to fetch USDA data. Defaulting to 0%."
+        status_msg = "⚠️ Network error trying to fetch USDA data. Using baseline defaults."
+
+    return harvest_pct, last_week_pct, total_production, status_msg
 
 # ==========================================
 # CACHED MACHINE LEARNING LOAD
@@ -165,19 +211,24 @@ auto_supply = st.sidebar.checkbox("📡 Auto-fetch Live USDA Data", value=True)
 
 if auto_supply:
     with st.sidebar.status("Fetching Live USDA Data..."):
-        harvest_pct, status_text = fetch_live_harvest_progress()
+        harvest_pct, last_week_pct, live_production, status_text = fetch_live_supply_data()
     
     st.sidebar.info(status_text)
     
-    # Calculate automated values
-    calc_is_harvesting = 1 if 0.0 < harvest_pct < 1.0 else 0
-    calc_cumulative = harvest_pct * NE_ANNUAL_PRODUCTION
+    # Calculate automated variables behind the scenes
+    is_harvesting = 1 if 0.0 < harvest_pct < 1.0 else 0
+    cumulative_harvest = harvest_pct * live_production
     
-    is_harvesting = st.sidebar.selectbox("Is it harvest season?", options=[0, 1], index=calc_is_harvesting, disabled=True)
-    cumulative_harvest = st.sidebar.number_input("Cumulative Harvest (Bushels)", value=calc_cumulative, disabled=True, format="%.0f")
-    weekly_bushels = st.sidebar.number_input("Weekly Bushels Produced", value=0.0, step=1000000.0, format="%.0f")
+    # NEW STEP 5: Calculate weekly bushels safely
+    weekly_pct_change = max(0.0, harvest_pct - last_week_pct) 
+    weekly_bushels = weekly_pct_change * live_production
+    
+    # Clean UI: Display the computed values as metrics/read-only information
+    st.sidebar.metric(label="Official Annual Production (Bu)", value=f"{live_production:,.0f}")
+    st.sidebar.number_input("Cumulative Harvest (Bushels)", value=cumulative_harvest, disabled=True, format="%.0f")
+    st.sidebar.number_input("Weekly Bushels Produced", value=weekly_bushels, disabled=True, format="%.0f")
 else:
-    is_harvesting = st.sidebar.selectbox("Is it harvest season?", options=[0, 1], index=0)
+    is_harvesting = st.sidebar.selectbox("Is it harvest season? (0=No, 1=Yes)", options=[0, 1], index=0)
     cumulative_harvest = st.sidebar.number_input("Cumulative Harvest (Bushels)", value=0.0, step=1000000.0, format="%.0f")
     weekly_bushels = st.sidebar.number_input("Weekly Bushels Produced", value=0.0, step=1000000.0, format="%.0f")
 

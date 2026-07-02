@@ -40,6 +40,7 @@ def fetch_live_supply_data():
         "commodity_desc": "CORN",
         "statisticcat_desc": "PRODUCTION",
         "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+        "prodn_practice_desc": "ALL PRODUCTION PRACTICES", # FIX 1: Force grand total
         "state_name": "NEBRASKA",
         "freq_desc": "ANNUAL",
         "format": "JSON"
@@ -77,8 +78,14 @@ def fetch_live_supply_data():
             exact_match_value = None
             last_week_match_value = None
             highest_value_this_year = 0
+            records_this_year = 0
             
             for record in records:
+                # FIX 2: Ignore previous years to prevent 100% bug
+                if int(record['year']) != current_year:
+                    continue
+                    
+                records_this_year += 1
                 record_week = int(record['reference_period_desc'].split('#')[-1])
                 record_val = float(record['Value'])
                 
@@ -90,15 +97,15 @@ def fetch_live_supply_data():
                 if record_week == current_week_num - 1:
                     last_week_match_value = record_val
             
-            # Apply dynamic fallbacks
+            # Apply dynamic fallbacks using ONLY current year's data
             if exact_match_value is not None:
                 harvest_pct = exact_match_value / 100.0
                 last_week_pct = (last_week_match_value / 100.0) if last_week_match_value is not None else 0.0
                 status_msg = f"🚜 Active Harvest: Using live USDA progress report ({exact_match_value}%)."
-            elif len(records) == 0 or highest_value_this_year == 0:
+            elif records_this_year == 0 or highest_value_this_year == 0:
                 harvest_pct = 0.0
                 last_week_pct = 0.0
-                status_msg = "🌱 Pre-Harvest Season: No USDA reports published yet this year. Defaulting to 0%."
+                status_msg = f"🌱 Pre-Harvest Season: No USDA reports published yet for {current_year}. Defaulting to 0%."
             else:
                 harvest_pct = 1.0
                 last_week_pct = 1.0
@@ -219,7 +226,7 @@ if auto_supply:
     is_harvesting = 1 if 0.0 < harvest_pct < 1.0 else 0
     cumulative_harvest = harvest_pct * live_production
     
-    # NEW STEP 5: Calculate weekly bushels safely
+    # Calculate weekly bushels safely
     weekly_pct_change = max(0.0, harvest_pct - last_week_pct) 
     weekly_bushels = weekly_pct_change * live_production
     

@@ -13,27 +13,21 @@ MAX_WEEKLY_SHIFT = 0.20
 USDA_API_KEY = "F8E7FAB6-C2FA-3375-8A8B-7996AC634920"
 
 # ==========================================
-# AUTO DATA PIPELINE (USDA API)
+# AUTO DATA PIPELINE: SUPPLY (USDA API)
 # ==========================================
 @st.cache_data(ttl=3600)  
 def fetch_live_supply_data():
-    """
-    Fetches harvest progress, LAST WEEK's progress, and total annual production.
-    Uses a Two-Stage Fallback: Tries to find Current Year Forecasts first, 
-    then falls back to Last Year's Final Production if forecasts aren't out yet.
-    """
     current_year = datetime.now().year
     current_week_num = datetime.now().isocalendar()[1]
     url = "https://quickstats.nass.usda.gov/api/api_GET/"
     
-    # Baseline fallback values
     harvest_pct = 0.0
     last_week_pct = 0.0
     total_production = 1800000000.0  
     status_msg_prod = "⚠️ Using hardcoded baseline production."
     status_msg_harv = ""
     
-    # --- 1. STAGE ONE: TRY TO FETCH CURRENT YEAR FORECAST ---
+    # --- STAGE ONE: TRY CURRENT YEAR FORECAST ---
     forecast_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -42,7 +36,7 @@ def fetch_live_supply_data():
         "commodity_desc": "CORN",
         "statisticcat_desc": "PRODUCTION, FORECAST",
         "short_desc": "CORN, GRAIN - PRODUCTION, FORECAST, MEASURED IN BU",
-        "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
+        "agg_level_desc": "STATE", 
         "state_name": "NEBRASKA",
         "year": str(current_year),
         "format": "JSON"
@@ -54,15 +48,14 @@ def fetch_live_supply_data():
         if fc_response.status_code == 200:
             fc_records = fc_response.json().get('data', [])
             if fc_records:
-                # Grab the most recent forecast published this year
                 newest_fc = fc_records[0] 
                 total_production = float(newest_fc['Value'].replace(',', ''))
                 production_found = True
                 status_msg_prod = f"📈 Using live {current_year} WASDE Production Forecast."
     except Exception:
-        pass  # Silently fail and move to Stage Two
+        pass 
 
-    # --- 2. STAGE TWO: FALLBACK TO LAST YEAR'S FINAL PROXY ---
+    # --- STAGE TWO: FALLBACK TO LAST YEAR ---
     if not production_found:
         prod_payload = {
             "key": USDA_API_KEY,
@@ -73,7 +66,7 @@ def fetch_live_supply_data():
             "statisticcat_desc": "PRODUCTION",
             "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
             "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
-            "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
+            "agg_level_desc": "STATE", 
             "state_name": "NEBRASKA",
             "year": str(current_year - 1), 
             "freq_desc": "ANNUAL",
@@ -91,7 +84,7 @@ def fetch_live_supply_data():
         except Exception:
             pass 
 
-    # --- 3. FETCH CURRENT & LAST WEEK PROGRESS ---
+    # --- FETCH PROGRESS ---
     harvest_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -100,7 +93,7 @@ def fetch_live_supply_data():
         "commodity_desc": "CORN",
         "statisticcat_desc": "PROGRESS",
         "short_desc": "CORN, GRAIN - PROGRESS, MEASURED IN PCT HARVESTED",
-        "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
+        "agg_level_desc": "STATE", 
         "state_name": "NEBRASKA",
         "year__GE": str(current_year - 1), 
         "format": "JSON"
@@ -110,49 +103,84 @@ def fetch_live_supply_data():
         response = requests.get(url, params=harvest_payload, timeout=10)
         if response.status_code == 200:
             records = response.json().get('data', [])
-            
-            exact_match_value = None
-            last_week_match_value = None
-            highest_value_this_year = 0
-            records_this_year = 0
+            exact_match_value, last_week_match_value = None, None
+            highest_value_this_year, records_this_year = 0, 0
             
             for record in records:
-                if int(record['year']) != current_year:
-                    continue
-                    
+                if int(record['year']) != current_year: continue
                 records_this_year += 1
                 record_week = int(record['reference_period_desc'].split('#')[-1])
                 record_val = float(record['Value'])
                 
-                if record_val > highest_value_this_year:
-                    highest_value_this_year = record_val
-                    
-                if record_week == current_week_num:
-                    exact_match_value = record_val
-                if record_week == current_week_num - 1:
-                    last_week_match_value = record_val
+                if record_val > highest_value_this_year: highest_value_this_year = record_val
+                if record_week == current_week_num: exact_match_value = record_val
+                if record_week == current_week_num - 1: last_week_match_value = record_val
             
             if exact_match_value is not None:
                 harvest_pct = exact_match_value / 100.0
                 last_week_pct = (last_week_match_value / 100.0) if last_week_match_value is not None else 0.0
                 status_msg_harv = f"🚜 Active Harvest: USDA progress report ({exact_match_value}%)."
             elif records_this_year == 0 or highest_value_this_year == 0:
-                harvest_pct = 0.0
-                last_week_pct = 0.0
+                harvest_pct, last_week_pct = 0.0, 0.0
                 status_msg_harv = f"🌱 Pre-Harvest Season: Defaulting to 0%."
             else:
-                harvest_pct = 1.0
-                last_week_pct = 1.0
+                harvest_pct, last_week_pct = 1.0, 1.0
                 status_msg_harv = f"❄️ Post-Harvest: USDA hit {highest_value_this_year}%. Defaulting to 100%."
         else:
             status_msg_harv = "⚠️ USDA API Error."
-            
     except Exception:
         status_msg_harv = "⚠️ Network Error."
 
     final_status_msg = f"{status_msg_harv}\n\n{status_msg_prod}"
-    
     return harvest_pct, last_week_pct, total_production, final_status_msg
+
+# ==========================================
+# AUTO DATA PIPELINE: DEMAND (USDA API)
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_livestock_demand():
+    """
+    Fetches the latest 'Cattle on Feed' inventory for Nebraska.
+    """
+    current_year = datetime.now().year
+    url = "https://quickstats.nass.usda.gov/api/api_GET/"
+    
+    # Baseline fallback (2.5 million head)
+    livestock_head = 2500000.0 
+    status_msg = "⚠️ Using hardcoded baseline for livestock demand."
+    
+    payload = {
+        "key": USDA_API_KEY,
+        "source_desc": "SURVEY",
+        "sector_desc": "ANIMALS & PRODUCTS",
+        "group_desc": "LIVESTOCK",
+        "commodity_desc": "CATTLE",
+        "statisticcat_desc": "INVENTORY",
+        "short_desc": "CATTLE, ON FEED - INVENTORY",
+        "state_name": "NEBRASKA",
+        "year__GE": str(current_year - 1), 
+        "freq_desc": "MONTHLY",
+        "format": "JSON"
+    }
+    
+    try:
+        response = requests.get(url, params=payload, timeout=10)
+        if response.status_code == 200:
+            records = response.json().get('data', [])
+            if records:
+                # Filter for the most recent year available in the payload
+                max_year = max([int(r['year']) for r in records])
+                recent_records = [r for r in records if int(r['year']) == max_year]
+                
+                newest_record = recent_records[0] # USDA usually puts latest first
+                livestock_head = float(newest_record['Value'].replace(',', ''))
+                record_month = newest_record['reference_period_desc']
+                
+                status_msg = f"🐄 Live USDA Cattle on Feed: {livestock_head:,.0f} head ({record_month} {max_year})."
+    except Exception:
+        pass
+        
+    return livestock_head, status_msg
 
 # ==========================================
 # CACHED MACHINE LEARNING LOAD
@@ -172,8 +200,7 @@ def load_model_assets():
     master_sheet = pd.read_csv(MASTER_SHEET_PATH)
     master_sheet.columns = master_sheet.columns.str.strip()
     master_sheet["Week_Num"] = pd.to_numeric(
-        master_sheet["Period"].astype(str).str.extract(r"(\d+)")[0],
-        errors="coerce",
+        master_sheet["Period"].astype(str).str.extract(r"(\d+)")[0], errors="coerce"
     )
     seasonality_map = (
         master_sheet.dropna(subset=["Week_Num", "Seasonality"])
@@ -190,9 +217,7 @@ def parse_recent_prices(raw_text, window_size):
         raise ValueError(f"Enter at least {window_size} recent prices.")
     return prices
 
-def build_feature_row(
-    week_num, seasonality, weekly_bushels, cumulative_harvest, is_harvesting, demand_ethanol, demand_livestock
-):
+def build_feature_row(week_num, seasonality, weekly_bushels, cumulative_harvest, is_harvesting, demand_ethanol, demand_livestock):
     return pd.DataFrame({
         "Week_Num": [week_num], "Seasonality": [seasonality], "Weekly_Bushels_Produced": [weekly_bushels],
         "Cumulative_Harvest": [cumulative_harvest], "Is_Harvesting": [is_harvesting],
@@ -208,16 +233,10 @@ except Exception as exc:
     st.stop()
 
 window_size = int(metadata.get("window_size", 4))
-feature_columns = metadata.get(
-    "feature_columns",
-    ["Week_Num", "Seasonality", "Weekly_Bushels_Produced", "Cumulative_Harvest", "Is_Harvesting", "Demand_Ethanol", "Demand_Livestock"],
-)
+feature_columns = metadata.get("feature_columns", ["Week_Num", "Seasonality", "Weekly_Bushels_Produced", "Cumulative_Harvest", "Is_Harvesting", "Demand_Ethanol", "Demand_Livestock"])
 
 st.title("🌽 Harvest or Hold? Nebraska Corn Market Forecaster")
 
-# ==========================================
-# SIMPLE VS ADVANCED VIEW TOGGLE
-# ==========================================
 view_mode = st.radio("Select Dashboard View:", ["👨‍🌾 Simple View", "📊 Advanced View"], horizontal=True)
 st.markdown("---")
 
@@ -231,7 +250,7 @@ target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week +
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Momentum Baseline")
-st.sidebar.number_input("Momentum Window Size (Weeks)", min_value=1, max_value=52, value=window_size, step=1, disabled=True, help="Fixed at 4 weeks due to model training.")
+st.sidebar.number_input("Momentum Window Size (Weeks)", min_value=1, max_value=52, value=window_size, step=1, disabled=True)
 recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", "3.78, 3.83, 3.70, 3.84")
 
 st.sidebar.markdown("---")
@@ -239,10 +258,26 @@ st.sidebar.subheader("Seasonality")
 use_auto_seasonality = st.sidebar.checkbox("Auto-fill seasonality by forecast week", value=True)
 manual_seasonality = st.sidebar.number_input("Manual Seasonality Override", value=float(seasonality_map.get(current_week, 4.50)), format="%.2f")
 
+# ==========================================
+# AUTO DATA: DEMAND FACTORS
+# ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("Demand Factors")
-demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990, step=1)
-demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=2500000, step=10000)
+
+auto_demand = st.sidebar.checkbox("📡 Auto-fetch Live Demand Data", value=True)
+
+if auto_demand:
+    with st.sidebar.status("Fetching Live Livestock Data..."):
+        live_cattle, cattle_status = fetch_livestock_demand()
+    
+    st.sidebar.info(cattle_status)
+    demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=live_cattle, disabled=True, format="%.0f")
+    
+    st.sidebar.info("🧪 Ethanol API pending (requires EIA key). Using manual input.")
+    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990, step=1)
+else:
+    demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=2500000.0, step=10000.0, format="%.0f")
+    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990, step=1)
 
 # ==========================================
 # AUTO DATA: SUPPLY FACTORS
@@ -250,7 +285,7 @@ demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=2500
 st.sidebar.markdown("---")
 st.sidebar.subheader("Supply Factors")
 
-auto_supply = st.sidebar.checkbox("📡 Auto-fetch Live USDA Data", value=True)
+auto_supply = st.sidebar.checkbox("📡 Auto-fetch Live Supply Data", value=True)
 
 if auto_supply:
     with st.sidebar.status("Fetching Live USDA Data..."):
@@ -258,15 +293,11 @@ if auto_supply:
     
     st.sidebar.info(status_text)
     
-    # Calculate automated variables behind the scenes
     is_harvesting = 1 if 0.0 < harvest_pct < 1.0 else 0
     cumulative_harvest = harvest_pct * live_production
-    
-    # Calculate weekly bushels safely
     weekly_pct_change = max(0.0, harvest_pct - last_week_pct) 
     weekly_bushels = weekly_pct_change * live_production
     
-    # Clean UI: Display the computed values as metrics/read-only information
     st.sidebar.metric(label="Official Annual Production (Bu)", value=f"{live_production:,.0f}")
     st.sidebar.number_input("Cumulative Harvest (Bushels)", value=cumulative_harvest, disabled=True, format="%.0f")
     st.sidebar.number_input("Weekly Bushels Produced", value=weekly_bushels, disabled=True, format="%.0f")

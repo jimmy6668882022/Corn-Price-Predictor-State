@@ -149,6 +149,7 @@ def fetch_livestock_demand():
     livestock_head = 2500000.0 
     status_msg = "⚠️ Using hardcoded baseline for livestock demand."
     
+    # ADDED THE FIX: "1000+ CAPACITY" filter to satisfy the USDA database
     payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -156,7 +157,7 @@ def fetch_livestock_demand():
         "group_desc": "LIVESTOCK",
         "commodity_desc": "CATTLE",
         "statisticcat_desc": "INVENTORY",
-        "short_desc": "CATTLE, ON FEED - INVENTORY",
+        "short_desc": "CATTLE, ON FEED, 1000+ CAPACITY - INVENTORY", 
         "state_name": "NEBRASKA",
         "year__GE": str(current_year - 1), 
         "freq_desc": "MONTHLY",
@@ -176,7 +177,7 @@ def fetch_livestock_demand():
                 livestock_head = float(newest_record['Value'].replace(',', ''))
                 record_month = newest_record['reference_period_desc']
                 
-                status_msg = f"🐄 Live USDA Cattle on Feed: {livestock_head:,.0f} head ({record_month} {max_year})."
+                status_msg = f"🐄 Live USDA Cattle on Feed: {livestock_head:,.0f} head ({record_month.title()} {max_year})."
     except Exception:
         pass
         

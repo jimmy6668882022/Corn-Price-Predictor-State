@@ -42,6 +42,7 @@ def fetch_live_supply_data():
         "commodity_desc": "CORN",
         "statisticcat_desc": "PRODUCTION, FORECAST",
         "short_desc": "CORN, GRAIN - PRODUCTION, FORECAST, MEASURED IN BU",
+        "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
         "state_name": "NEBRASKA",
         "year": str(current_year),
         "format": "JSON"
@@ -72,8 +73,9 @@ def fetch_live_supply_data():
             "statisticcat_desc": "PRODUCTION",
             "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
             "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
+            "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
             "state_name": "NEBRASKA",
-            "year": str(current_year - 1), # Explicitly look back one year
+            "year": str(current_year - 1), 
             "freq_desc": "ANNUAL",
             "format": "JSON"
         }
@@ -98,6 +100,7 @@ def fetch_live_supply_data():
         "commodity_desc": "CORN",
         "statisticcat_desc": "PROGRESS",
         "short_desc": "CORN, GRAIN - PROGRESS, MEASURED IN PCT HARVESTED",
+        "agg_level_desc": "STATE", # <--- FORCE STATE-LEVEL DATA
         "state_name": "NEBRASKA",
         "year__GE": str(current_year - 1), 
         "format": "JSON"

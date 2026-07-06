@@ -137,13 +137,14 @@ def fetch_live_supply_data():
     final_status_msg = f"{status_msg_harv}\n\n{status_msg_prod}"
     return harvest_pct, last_week_pct, total_production, final_status_msg
 
+
 # ==========================================
 # AUTO DATA PIPELINE: DEMAND (USDA & EIA APIs)
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_livestock_demand():
     """
-    Fetches the latest 'Cattle on Feed' inventory for Nebraska.
+    Fetches the latest 'Cattle on Feed' inventory for Nebraska using exact QuickStats web parameters.
     """
     current_year = datetime.now().year
     url = "https://quickstats.nass.usda.gov/api/api_GET/"
@@ -153,15 +154,15 @@ def fetch_livestock_demand():
     
     payload = {
         "key": USDA_API_KEY,
-        "sector_desc": "ANIMALS & PRODUCTS",
-        "group_desc": "LIVESTOCK",
-        "commodity_desc": "CATTLE",
-        "statisticcat_desc": "INVENTORY",
-        "class_desc": "ON FEED",
+        "short_desc": "CATTLE, ON FEED - INVENTORY",
         "state_name": "NEBRASKA",
-        "year__GE": str(current_year - 1), 
-        "freq_desc": "MONTHLY",
+        "year__GE": str(current_year - 1),
         "format": "JSON"
+    }
+    
+    month_map = {
+        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+        'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
     }
     
     try:
@@ -169,23 +170,39 @@ def fetch_livestock_demand():
         if response.status_code == 200:
             records = response.json().get('data', [])
             if records:
-                max_year = max([int(r['year']) for r in records])
-                recent_records = [r for r in records if int(r['year']) == max_year]
+                valid_records = []
+                for r in records:
+                    try:
+                        year = int(r['year'])
+                        period_upper = r['reference_period_desc'].upper()
+                        month_num = 1
+                        for m_name, m_val in month_map.items():
+                            if m_name in period_upper:
+                                month_num = m_val
+                                break
+                        valid_records.append((year, month_num, r))
+                    except Exception:
+                        continue
                 
-                newest_record = recent_records[0] 
-                livestock_head = float(newest_record['Value'].replace(',', ''))
-                record_month = newest_record['reference_period_desc']
-                
-                status_msg = f"🐄 Live USDA Cattle on Feed: {livestock_head:,.0f} head ({record_month.title()} {max_year})."
+                if valid_records:
+                    valid_records.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                    newest_record = valid_records[0][2]
+                    
+                    livestock_head = float(newest_record['Value'].replace(',', ''))
+                    record_month = newest_record['reference_period_desc']
+                    record_year = newest_record['year']
+                    
+                    status_msg = f"🐄 Live USDA Cattle on Feed: {livestock_head:,.0f} head ({record_month.title()} {record_year})."
     except Exception:
         pass
         
     return livestock_head, status_msg
 
+
 @st.cache_data(ttl=3600)
 def fetch_ethanol_demand():
     """
-    Fetches the latest weekly Midwest (PADD 2) Ethanol Production.
+    Fetches the latest weekly Midwest (PADD 2) Ethanol Production from the EIA API.
     """
     url = "https://api.eia.gov/v2/petroleum/pnp/wprode/data/"
     ethanol_bpd = 990.0 
@@ -214,6 +231,7 @@ def fetch_ethanol_demand():
         pass
         
     return ethanol_bpd, status_msg
+
 
 # ==========================================
 # CACHED MACHINE LEARNING LOAD

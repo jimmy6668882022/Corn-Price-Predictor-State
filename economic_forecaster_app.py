@@ -10,7 +10,10 @@ MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
 MASTER_SHEET_PATH = "Master Sheet for MSEF State.csv"
 MAX_WEEKLY_SHIFT = 0.20
+
+# --- API KEYS ---
 USDA_API_KEY = "F8E7FAB6-C2FA-3375-8A8B-7996AC634920"
+EIA_API_KEY = "hQjaCbkfOn9dttle5ho4oRu1aaffTZgJgmB7lqZx"
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)
@@ -135,7 +138,7 @@ def fetch_live_supply_data():
     return harvest_pct, last_week_pct, total_production, final_status_msg
 
 # ==========================================
-# AUTO DATA PIPELINE: DEMAND (USDA API)
+# AUTO DATA PIPELINE: DEMAND (USDA & EIA APIs)
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_livestock_demand():
@@ -145,19 +148,16 @@ def fetch_livestock_demand():
     current_year = datetime.now().year
     url = "https://quickstats.nass.usda.gov/api/api_GET/"
     
-    # Baseline fallback (2.5 million head)
     livestock_head = 2500000.0 
     status_msg = "⚠️ Using hardcoded baseline for livestock demand."
     
-    # ADDED THE FIX: "1000+ CAPACITY" filter to satisfy the USDA database
     payload = {
         "key": USDA_API_KEY,
-        "source_desc": "SURVEY",
         "sector_desc": "ANIMALS & PRODUCTS",
         "group_desc": "LIVESTOCK",
         "commodity_desc": "CATTLE",
         "statisticcat_desc": "INVENTORY",
-        "short_desc": "CATTLE, ON FEED, 1000+ CAPACITY - INVENTORY", 
+        "class_desc": "ON FEED",
         "state_name": "NEBRASKA",
         "year__GE": str(current_year - 1), 
         "freq_desc": "MONTHLY",
@@ -169,11 +169,10 @@ def fetch_livestock_demand():
         if response.status_code == 200:
             records = response.json().get('data', [])
             if records:
-                # Filter for the most recent year available in the payload
                 max_year = max([int(r['year']) for r in records])
                 recent_records = [r for r in records if int(r['year']) == max_year]
                 
-                newest_record = recent_records[0] # USDA usually puts latest first
+                newest_record = recent_records[0] 
                 livestock_head = float(newest_record['Value'].replace(',', ''))
                 record_month = newest_record['reference_period_desc']
                 
@@ -182,6 +181,39 @@ def fetch_livestock_demand():
         pass
         
     return livestock_head, status_msg
+
+@st.cache_data(ttl=3600)
+def fetch_ethanol_demand():
+    """
+    Fetches the latest weekly Midwest (PADD 2) Ethanol Production.
+    """
+    url = "https://api.eia.gov/v2/petroleum/pnp/wprode/data/"
+    ethanol_bpd = 990.0 
+    status_msg = "⚠️ Using hardcoded baseline for ethanol demand."
+    
+    payload = {
+        "api_key": EIA_API_KEY,
+        "frequency": "weekly",
+        "data[0]": "value",
+        "facets[series][]": "W_EPOOXE_YOP_R20_MBBLD",
+        "sort[0][column]": "period",
+        "sort[0][direction]": "desc",
+        "length": 10 
+    }
+    
+    try:
+        response = requests.get(url, params=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json().get('response', {}).get('data', [])
+            if data:
+                newest_record = data[0]
+                ethanol_bpd = float(newest_record['value'])
+                record_date = newest_record['period']
+                status_msg = f"🏭 Live EIA Ethanol Production: {ethanol_bpd:,.0f}k Barrels/Day (Week of {record_date})."
+    except Exception:
+        pass
+        
+    return ethanol_bpd, status_msg
 
 # ==========================================
 # CACHED MACHINE LEARNING LOAD
@@ -268,17 +300,18 @@ st.sidebar.subheader("Demand Factors")
 auto_demand = st.sidebar.checkbox("📡 Auto-fetch Live Demand Data", value=True)
 
 if auto_demand:
-    with st.sidebar.status("Fetching Live Livestock Data..."):
+    with st.sidebar.status("Fetching Live Demand Data..."):
         live_cattle, cattle_status = fetch_livestock_demand()
+        live_ethanol, ethanol_status = fetch_ethanol_demand()
     
     st.sidebar.info(cattle_status)
     demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=live_cattle, disabled=True, format="%.0f")
     
-    st.sidebar.info("🧪 Ethanol API pending (requires EIA key). Using manual input.")
-    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990, step=1)
+    st.sidebar.info(ethanol_status)
+    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=live_ethanol, disabled=True, format="%.0f")
 else:
     demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=2500000.0, step=10000.0, format="%.0f")
-    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990, step=1)
+    demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990.0, step=1.0, format="%.0f")
 
 # ==========================================
 # AUTO DATA: SUPPLY FACTORS

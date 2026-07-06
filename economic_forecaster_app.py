@@ -19,7 +19,8 @@ USDA_API_KEY = "F8E7FAB6-C2FA-3375-8A8B-7996AC634920"
 def fetch_live_supply_data():
     """
     Fetches harvest progress, LAST WEEK's progress, and total annual production.
-    Returns: (harvest_pct, last_week_pct, total_production, status_message)
+    Uses a Two-Stage Fallback: Tries to find Current Year Forecasts first, 
+    then falls back to Last Year's Final Production if forecasts aren't out yet.
     """
     current_year = datetime.now().year
     current_week_num = datetime.now().isocalendar()[1]
@@ -29,34 +30,66 @@ def fetch_live_supply_data():
     harvest_pct = 0.0
     last_week_pct = 0.0
     total_production = 1800000000.0  
-    status_msg = ""
+    status_msg_prod = "⚠️ Using hardcoded baseline production."
+    status_msg_harv = ""
     
-    # --- 1. FETCH TOTAL ANNUAL PRODUCTION ---
-    prod_payload = {
+    # --- 1. STAGE ONE: TRY TO FETCH CURRENT YEAR FORECAST ---
+    forecast_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
         "sector_desc": "CROPS",
         "group_desc": "FIELD CROPS",
         "commodity_desc": "CORN",
-        "statisticcat_desc": "PRODUCTION",
-        "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
-        "prodn_practice_desc": "ALL PRODUCTION PRACTICES", # FIX 1: Force grand total
+        "statisticcat_desc": "PRODUCTION, FORECAST",
+        "short_desc": "CORN, GRAIN - PRODUCTION, FORECAST, MEASURED IN BU",
         "state_name": "NEBRASKA",
-        "freq_desc": "ANNUAL",
+        "year": str(current_year),
         "format": "JSON"
     }
     
+    production_found = False
     try:
-        prod_response = requests.get(url, params=prod_payload, timeout=10)
-        if prod_response.status_code == 200:
-            prod_records = prod_response.json().get('data', [])
-            if prod_records:
-                newest_prod = max(prod_records, key=lambda x: x['year'])
-                total_production = float(newest_prod['Value'].replace(',', ''))
+        fc_response = requests.get(url, params=forecast_payload, timeout=10)
+        if fc_response.status_code == 200:
+            fc_records = fc_response.json().get('data', [])
+            if fc_records:
+                # Grab the most recent forecast published this year
+                newest_fc = fc_records[0] 
+                total_production = float(newest_fc['Value'].replace(',', ''))
+                production_found = True
+                status_msg_prod = f"📈 Using live {current_year} WASDE Production Forecast."
     except Exception:
-        pass  
+        pass  # Silently fail and move to Stage Two
 
-    # --- 2. FETCH CURRENT & LAST WEEK PROGRESS ---
+    # --- 2. STAGE TWO: FALLBACK TO LAST YEAR'S FINAL PROXY ---
+    if not production_found:
+        prod_payload = {
+            "key": USDA_API_KEY,
+            "source_desc": "SURVEY",
+            "sector_desc": "CROPS",
+            "group_desc": "FIELD CROPS",
+            "commodity_desc": "CORN",
+            "statisticcat_desc": "PRODUCTION",
+            "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
+            "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
+            "state_name": "NEBRASKA",
+            "year": str(current_year - 1), # Explicitly look back one year
+            "freq_desc": "ANNUAL",
+            "format": "JSON"
+        }
+        
+        try:
+            prod_response = requests.get(url, params=prod_payload, timeout=10)
+            if prod_response.status_code == 200:
+                prod_records = prod_response.json().get('data', [])
+                if prod_records:
+                    newest_prod = max(prod_records, key=lambda x: x['year'])
+                    total_production = float(newest_prod['Value'].replace(',', ''))
+                    status_msg_prod = f"📉 {current_year} forecasts unavailable. Using {current_year-1} final harvest as proxy."
+        except Exception:
+            pass 
+
+    # --- 3. FETCH CURRENT & LAST WEEK PROGRESS ---
     harvest_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -81,7 +114,6 @@ def fetch_live_supply_data():
             records_this_year = 0
             
             for record in records:
-                # FIX 2: Ignore previous years to prevent 100% bug
                 if int(record['year']) != current_year:
                     continue
                     
@@ -97,26 +129,27 @@ def fetch_live_supply_data():
                 if record_week == current_week_num - 1:
                     last_week_match_value = record_val
             
-            # Apply dynamic fallbacks using ONLY current year's data
             if exact_match_value is not None:
                 harvest_pct = exact_match_value / 100.0
                 last_week_pct = (last_week_match_value / 100.0) if last_week_match_value is not None else 0.0
-                status_msg = f"🚜 Active Harvest: Using live USDA progress report ({exact_match_value}%)."
+                status_msg_harv = f"🚜 Active Harvest: USDA progress report ({exact_match_value}%)."
             elif records_this_year == 0 or highest_value_this_year == 0:
                 harvest_pct = 0.0
                 last_week_pct = 0.0
-                status_msg = f"🌱 Pre-Harvest Season: No USDA reports published yet for {current_year}. Defaulting to 0%."
+                status_msg_harv = f"🌱 Pre-Harvest Season: Defaulting to 0%."
             else:
                 harvest_pct = 1.0
                 last_week_pct = 1.0
-                status_msg = f"❄️ Post-Harvest Season: USDA reporting ended after hitting {highest_value_this_year}%. Defaulting to 100%."
+                status_msg_harv = f"❄️ Post-Harvest: USDA hit {highest_value_this_year}%. Defaulting to 100%."
         else:
-            status_msg = "⚠️ Could not connect to USDA API. Using baseline defaults."
+            status_msg_harv = "⚠️ USDA API Error."
             
     except Exception:
-        status_msg = "⚠️ Network error trying to fetch USDA data. Using baseline defaults."
+        status_msg_harv = "⚠️ Network Error."
 
-    return harvest_pct, last_week_pct, total_production, status_msg
+    final_status_msg = f"{status_msg_harv}\n\n{status_msg_prod}"
+    
+    return harvest_pct, last_week_pct, total_production, final_status_msg
 
 # ==========================================
 # CACHED MACHINE LEARNING LOAD

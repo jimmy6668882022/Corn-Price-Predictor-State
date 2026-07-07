@@ -23,55 +23,52 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 def fetch_recent_prices():
     """
     Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
-    Uses aggressive JSON flattening and text-searching to bypass API mismatches.
+    Uses allSections=true and aggressive JSON flattening to bypass API cover sheets.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
     if not AMS_API_KEY:
         return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
         
-    url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Data"
+    url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225"
     
     try:
-        response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
+        # THE FIX: Tell the API to return the actual data sections, not just the header
+        response = requests.get(url, auth=(AMS_API_KEY, ''), params={"allSections": "true"}, timeout=10)
         
         if response.status_code != 200:
             return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code}"
             
         data = response.json()
         
-        # 1. Handle API version wrappers (Lists vs Dicts)
         if isinstance(data, list):
             records = data
         else:
             records = data.get('results', [])
             
-        # 2. Flatten nested 'results' arrays (USDA hides rows inside 'Report Detail' sections)
+        # Flatten nested sections (like 'Report Detail') to extract the actual rows
         flat_records = []
         for item in records:
-            if isinstance(item, dict) and 'results' in item:
-                flat_records.extend(item['results'])
+            if isinstance(item, dict):
+                if 'results' in item and isinstance(item['results'], list):
+                    flat_records.extend(item['results'])
+                else:
+                    flat_records.append(item)
             else:
                 flat_records.append(item)
                 
         if not flat_records:
             return fallback_prices, "⚠️ Report 3225 returned empty data."
             
-        # 3. Aggressive Text Filter (Ignores unpredictable column names)
         corn_records = []
         for r in flat_records:
-            # Create a giant uppercase string of every value in the row
+            # Create a giant uppercase string of every value in the row to ignore column name changes
             row_text = " ".join(str(v).upper() for v in r.values())
             
-            # Look for US #2 Yellow Corn in the East region
             if "CORN" in row_text and "EAST" in row_text:
-                # Convert keys to lowercase to grab prices safely
                 r_lower = {str(k).lower(): v for k, v in r.items()}
-                
-                # Standardize the data we care about
                 date_val = r_lower.get('published_date', r_lower.get('report_date', ''))
                 
-                # Handle varying price column names
                 p_min = r_lower.get('price_min', r_lower.get('low_price', r_lower.get('price', None)))
                 p_max = r_lower.get('price_max', r_lower.get('high_price', r_lower.get('price', None)))
                 
@@ -82,12 +79,12 @@ def fetch_recent_prices():
                         'p_max': p_max
                     })
                     
-        # Diagnostic Error: If the filter found nothing, print the exact columns available
+        # Diagnostic printout if the aggressive filter still misses
         if len(corn_records) == 0:
-            sample_keys = ", ".join(list(flat_records[0].keys()))
+            sample_keys = ", ".join(list(flat_records[0].keys())) if flat_records else "None"
             return fallback_prices, f"⚠️ Filter found 0 rows for 'East Corn'. Columns available: {sample_keys}"
             
-        # 4. Sort newest to oldest
+        # Sort newest to oldest
         corn_records.sort(key=lambda x: x['date'], reverse=True)
         
         unique_prices = []
@@ -109,7 +106,7 @@ def fetch_recent_prices():
         if len(unique_prices) < 4:
             return fallback_prices, f"⚠️ Only found {len(unique_prices)} days of data for East Corn."
             
-        # 5. Reverse to chronological order (oldest -> newest) for the momentum model
+        # Reverse to chronological order (oldest -> newest) for the momentum model
         unique_prices.reverse()
         price_str = ", ".join(map(str, unique_prices))
         return price_str, "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
@@ -133,7 +130,6 @@ def fetch_live_supply_data():
     status_msg_prod = "⚠️ Using hardcoded baseline production."
     status_msg_harv = ""
     
-    # --- STAGE ONE: TRY CURRENT YEAR FORECAST ---
     forecast_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -161,7 +157,6 @@ def fetch_live_supply_data():
     except Exception:
         pass 
 
-    # --- STAGE TWO: FALLBACK TO LAST YEAR ---
     if not production_found:
         prod_payload = {
             "key": USDA_API_KEY,
@@ -190,7 +185,6 @@ def fetch_live_supply_data():
         except Exception:
             pass 
 
-    # --- FETCH PROGRESS ---
     harvest_payload = {
         "key": USDA_API_KEY,
         "source_desc": "SURVEY",
@@ -246,9 +240,6 @@ def fetch_live_supply_data():
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_livestock_demand():
-    """
-    Fetches the latest 'Cattle on Feed' inventory for Nebraska using exact QuickStats web parameters.
-    """
     current_year = datetime.now().year
     url = "https://quickstats.nass.usda.gov/api/api_GET/"
     
@@ -303,9 +294,6 @@ def fetch_livestock_demand():
 
 @st.cache_data(ttl=3600)
 def fetch_ethanol_demand():
-    """
-    Fetches the latest weekly Midwest (PADD 2) Ethanol Production from the EIA API.
-    """
     url = "https://api.eia.gov/v2/petroleum/pnp/wprode/data/"
     ethanol_bpd = 990.0 
     status_msg = "⚠️ Using hardcoded baseline for ethanol demand."

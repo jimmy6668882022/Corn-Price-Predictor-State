@@ -23,14 +23,13 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 def fetch_recent_prices():
     """
     Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
-    Bypasses the API cover sheet by directly targeting the 'Report Detail' endpoint.
+    Uses robust pandas averaging and exact column matching based on live API headers.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
     if not AMS_API_KEY:
         return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
         
-    # THE FIX: Bypass the header and directly target the data section!
     url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Report%20Detail"
     
     try:
@@ -40,75 +39,89 @@ def fetch_recent_prices():
             return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code}"
             
         data = response.json()
-        
-        # Flatten API wrappers
-        if isinstance(data, list):
-            records = []
-            for item in data:
-                if isinstance(item, dict) and 'results' in item:
-                    records.extend(item['results'])
-                else:
-                    records.append(item)
-        else:
-            records = data.get('results', [])
+        records = data.get('results', []) if isinstance(data, dict) else data
+            
+        # Flatten nested sections
+        flat_records = []
+        for item in records:
+            if isinstance(item, dict) and 'results' in item:
+                flat_records.extend(item['results'])
+            else:
+                flat_records.append(item)
                 
-        if not records:
+        if not flat_records:
             return fallback_prices, "⚠️ Report Detail returned empty data."
             
         corn_records = []
-        for r in records:
-            # Create a giant uppercase string of every value in the row to ignore column name changes
-            row_text = " ".join(str(v).upper() for v in r.values())
+        for r in flat_records:
+            commodity = str(r.get('commodity', '')).upper()
             
-            # Lock onto East Nebraska Corn
-            if "CORN" in row_text and "EAST" in row_text:
-                r_lower = {str(k).lower(): v for k, v in r.items()}
-                date_val = r_lower.get('published_date', r_lower.get('report_date', ''))
+            # 1. Filter for Corn
+            if "CORN" in commodity:
+                date_val = r.get('published_date', r.get('report_date', ''))
                 
-                p_min = r_lower.get('price_min', r_lower.get('low_price', r_lower.get('price', None)))
-                p_max = r_lower.get('price_max', r_lower.get('high_price', r_lower.get('price', None)))
+                # 2. Extract prices using the EXACT keys from the USDA error message
+                p_min = r.get('price Min')
+                p_max = r.get('price Max')
+                p_avg = r.get('avg_price')
                 
-                if date_val and p_min is not None and p_max is not None:
+                final_price = None
+                
+                # Prefer the provided average, otherwise calculate it ourselves
+                if p_avg is not None and str(p_avg).strip() != "":
+                    final_price = float(p_avg)
+                elif p_min is not None and p_max is not None:
+                    try:
+                        final_price = (float(p_min) + float(p_max)) / 2.0
+                    except ValueError:
+                        pass
+                        
+                if date_val and final_price is not None:
+                    location_string = str(r.get('trade_loc', '')) + " " + str(r.get('market_location_name', ''))
                     corn_records.append({
                         'date': date_val,
-                        'p_min': p_min,
-                        'p_max': p_max
+                        'price': final_price,
+                        'location': location_string.upper()
                     })
                     
-        # Diagnostic printout: If it fails now, we will see the actual numerical column names
-        if len(corn_records) == 0:
-            sample_keys = ", ".join(list(records[0].keys())) if records else "None"
-            return fallback_prices, f"⚠️ Filter found 0 rows for 'East Corn'. Columns available: {sample_keys}"
+        if not corn_records:
+            return fallback_prices, "⚠️ Found 0 Corn rows with valid numerical prices."
             
+        # 3. Smart Regional Filter
+        # Try to find East/Eastern towns. If none exist today, safely use all of Nebraska.
+        east_records = [row for row in corn_records if "EAST" in row['location']]
+        
+        if len(east_records) > 0:
+            target_records = east_records
+            status_message = "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
+        else:
+            target_records = corn_records
+            status_message = "📈 Live USDA AMS Cash Prices Fetched (Nebraska Statewide Average)!"
+            
+        # 4. Group by Date and Average using Pandas
+        df = pd.DataFrame(target_records)
+        df['date'] = pd.to_datetime(df['date']).dt.date
+        
+        # Calculate the average price across all elevators for each specific day
+        daily_avg = df.groupby('date')['price'].mean().reset_index()
+        
         # Sort newest to oldest
-        corn_records.sort(key=lambda x: x['date'], reverse=True)
+        daily_avg = daily_avg.sort_values('date', ascending=False)
         
-        unique_prices = []
-        seen_dates = set()
+        # Grab the 4 most recent days
+        unique_prices = daily_avg['price'].round(2).tolist()[:4]
         
-        for r in corn_records:
-            date = r['date']
-            if date not in seen_dates:
-                try:
-                    avg_price = (float(r['p_min']) + float(r['p_max'])) / 2.0
-                    unique_prices.append(round(avg_price, 2))
-                    seen_dates.add(date)
-                except ValueError:
-                    continue
-                    
-            if len(unique_prices) >= 4:
-                break
-                
         if len(unique_prices) < 4:
-            return fallback_prices, f"⚠️ Only found {len(unique_prices)} days of data for East Corn."
+            return fallback_prices, f"⚠️ Only found {len(unique_prices)} valid days of data. Need 4."
             
-        # Reverse to chronological order (oldest -> newest) for the momentum model
+        # 5. Reverse for chronological order (Week 1, Week 2, Week 3, Week 4)
         unique_prices.reverse()
         price_str = ", ".join(map(str, unique_prices))
-        return price_str, "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
+        
+        return price_str, status_message
         
     except Exception as e:
-        return fallback_prices, f"⚠️ Script Error: {str(e)}"
+        return fallback_prices, f"⚠️ Python Error: {str(e)}"
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)
@@ -161,7 +174,7 @@ def fetch_live_supply_data():
             "commodity_desc": "CORN",
             "statisticcat_desc": "PRODUCTION",
             "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
-            "prodn_practice_desc": "ALL PRODUCTION Practices",
+            "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
             "agg_level_desc": "STATE", 
             "state_name": "NEBRASKA",
             "year": str(current_year - 1), 
@@ -517,19 +530,3 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
 
         elif view_mode == "📊 Advanced View":
             st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
-            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
-            st.success(f"Final projected price for Week {target_week}: ${final_price:.2f}")
-            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
-
-            fig = px.line(forecast_df, x="Week", y="Predicted Price", title="Forecasted Price Trajectory", markers=True, labels={"Predicted Price": "Price ($/Bushel)", "Week": "Week Number"})
-            fig.update_traces(line_color="#C56A1A", line_width=3, marker=dict(size=8, color="#C56A1A"))
-            fig.update_layout(xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'), yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$"), hovermode="x unified")
-            st.plotly_chart(fig, use_container_width=True)
-
-    except Exception as e:
-        st.error("⚠️ System Interruption Detected")
-        st.info("⏳ We are currently waiting for the newest/updated data to sync, or a required field is missing. Please check back later or verify your inputs.")
-
-st.markdown("---")
-st.warning("**Disclaimer:** These projections are estimates based on historical trends and current inputs. They are not guaranteed to be 100% accurate. The model cannot effectively predict outliers caused by 'black swan' events, such as extreme weather disasters, unpredictable geopolitical shifts, or sudden market crashes.")

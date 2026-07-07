@@ -14,6 +14,73 @@ MAX_WEEKLY_SHIFT = 0.20
 # --- API KEYS ---
 USDA_API_KEY = "F8E7FAB6-C2FA-3375-8A8B-7996AC634920"
 EIA_API_KEY = "hQjaCbkfOn9dttle5ho4oRu1aaffTZgJgmB7lqZx"
+AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr" 
+
+# ==========================================
+# AUTO DATA PIPELINE: MOMENTUM (USDA AMS API)
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_recent_prices():
+    """
+    Fetches the last 4 unique daily/weekly cash prices from Nebraska Elevators (Report 3225).
+    Filters specifically for US #2 Yellow Corn in the East region.
+    """
+    fallback_prices = "3.78, 3.83, 3.70, 3.84"
+    status_msg = "⚠️ Using hardcoded baseline for recent prices."
+    
+    if not AMS_API_KEY:
+        return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
+        
+    url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Data"
+    
+    try:
+        # AMS API uses Basic Auth with the key as the username
+        response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
+        if response.status_code == 200:
+            records = response.json().get('results', [])
+            if records:
+                # Filter strictly for Corn and the East Region
+                corn_records = []
+                for r in records:
+                    commodity = str(r.get("commodity", ""))
+                    # Check region fields (MARS uses region, location, or region_location depending on report)
+                    region = str(r.get("region", "")) + str(r.get("region_location", "")) + str(r.get("location", ""))
+                    if "Corn" in commodity and "East" in region:
+                        corn_records.append(r)
+                
+                # Sort newest to oldest
+                corn_records.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+                
+                unique_prices = []
+                seen_dates = set()
+                
+                for r in corn_records:
+                    date = r.get('published_date')
+                    if date not in seen_dates:
+                        p_min = r.get('price_min')
+                        p_max = r.get('price_max')
+                        try:
+                            # Average the min and max bids across the East state region for that day
+                            if p_min and p_max:
+                                avg_price = (float(p_min) + float(p_max)) / 2.0
+                                unique_prices.append(round(avg_price, 2))
+                                seen_dates.add(date)
+                        except ValueError:
+                            continue
+                    
+                    if len(unique_prices) >= 4:
+                        break
+                
+                if len(unique_prices) >= 4:
+                    # Reverse so it reads oldest to newest (Week 1, Week 2, Week 3, Week 4)
+                    unique_prices.reverse()
+                    price_str = ", ".join(map(str, unique_prices))
+                    return price_str, "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
+    except Exception:
+        pass
+        
+    return fallback_prices, status_msg
+
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)
@@ -198,7 +265,6 @@ def fetch_livestock_demand():
         
     return livestock_head, status_msg
 
-
 @st.cache_data(ttl=3600)
 def fetch_ethanol_demand():
     """
@@ -302,7 +368,18 @@ target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week +
 st.sidebar.markdown("---")
 st.sidebar.subheader("Momentum Baseline")
 st.sidebar.number_input("Momentum Window Size (Weeks)", min_value=1, max_value=52, value=window_size, step=1, disabled=True)
-recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", "3.78, 3.83, 3.70, 3.84")
+
+# LIVE PRICES TOGGLE
+auto_momentum = st.sidebar.checkbox("📡 Auto-fetch Live Regional Prices", value=True)
+
+if auto_momentum:
+    with st.sidebar.status("Fetching Live Price Data..."):
+        live_prices_str, price_status = fetch_recent_prices()
+    
+    st.sidebar.info(price_status)
+    recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", live_prices_str, disabled=True)
+else:
+    recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", "3.78, 3.83, 3.70, 3.84")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Seasonality")

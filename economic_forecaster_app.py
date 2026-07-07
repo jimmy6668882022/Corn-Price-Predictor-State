@@ -23,48 +23,44 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 def fetch_recent_prices():
     """
     Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
-    Uses allSections=true and aggressive JSON flattening to bypass API cover sheets.
+    Bypasses the API cover sheet by directly targeting the 'Report Detail' endpoint.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
     if not AMS_API_KEY:
         return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
         
-    url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225"
+    # THE FIX: Bypass the header and directly target the data section!
+    url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Report%20Detail"
     
     try:
-        # THE FIX: Tell the API to return the actual data sections, not just the header
-        response = requests.get(url, auth=(AMS_API_KEY, ''), params={"allSections": "true"}, timeout=10)
+        response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
         
         if response.status_code != 200:
             return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code}"
             
         data = response.json()
         
+        # Flatten API wrappers
         if isinstance(data, list):
-            records = data
+            records = []
+            for item in data:
+                if isinstance(item, dict) and 'results' in item:
+                    records.extend(item['results'])
+                else:
+                    records.append(item)
         else:
             records = data.get('results', [])
-            
-        # Flatten nested sections (like 'Report Detail') to extract the actual rows
-        flat_records = []
-        for item in records:
-            if isinstance(item, dict):
-                if 'results' in item and isinstance(item['results'], list):
-                    flat_records.extend(item['results'])
-                else:
-                    flat_records.append(item)
-            else:
-                flat_records.append(item)
                 
-        if not flat_records:
-            return fallback_prices, "⚠️ Report 3225 returned empty data."
+        if not records:
+            return fallback_prices, "⚠️ Report Detail returned empty data."
             
         corn_records = []
-        for r in flat_records:
+        for r in records:
             # Create a giant uppercase string of every value in the row to ignore column name changes
             row_text = " ".join(str(v).upper() for v in r.values())
             
+            # Lock onto East Nebraska Corn
             if "CORN" in row_text and "EAST" in row_text:
                 r_lower = {str(k).lower(): v for k, v in r.items()}
                 date_val = r_lower.get('published_date', r_lower.get('report_date', ''))
@@ -79,9 +75,9 @@ def fetch_recent_prices():
                         'p_max': p_max
                     })
                     
-        # Diagnostic printout if the aggressive filter still misses
+        # Diagnostic printout: If it fails now, we will see the actual numerical column names
         if len(corn_records) == 0:
-            sample_keys = ", ".join(list(flat_records[0].keys())) if flat_records else "None"
+            sample_keys = ", ".join(list(records[0].keys())) if records else "None"
             return fallback_prices, f"⚠️ Filter found 0 rows for 'East Corn'. Columns available: {sample_keys}"
             
         # Sort newest to oldest
@@ -113,7 +109,6 @@ def fetch_recent_prices():
         
     except Exception as e:
         return fallback_prices, f"⚠️ Script Error: {str(e)}"
-
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)
@@ -166,7 +161,7 @@ def fetch_live_supply_data():
             "commodity_desc": "CORN",
             "statisticcat_desc": "PRODUCTION",
             "short_desc": "CORN, GRAIN - PRODUCTION, MEASURED IN BU",
-            "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
+            "prodn_practice_desc": "ALL PRODUCTION Practices",
             "agg_level_desc": "STATE", 
             "state_name": "NEBRASKA",
             "year": str(current_year - 1), 
@@ -233,7 +228,6 @@ def fetch_live_supply_data():
 
     final_status_msg = f"{status_msg_harv}\n\n{status_msg_prod}"
     return harvest_pct, last_week_pct, total_production, final_status_msg
-
 
 # ==========================================
 # AUTO DATA PIPELINE: DEMAND (USDA & EIA APIs)
@@ -322,7 +316,6 @@ def fetch_ethanol_demand():
         
     return ethanol_bpd, status_msg
 
-
 # ==========================================
 # CACHED MACHINE LEARNING LOAD
 # ==========================================
@@ -393,7 +386,6 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Momentum Baseline")
 st.sidebar.number_input("Momentum Window Size (Weeks)", min_value=1, max_value=52, value=window_size, step=1, disabled=True)
 
-# LIVE PRICES TOGGLE
 auto_momentum = st.sidebar.checkbox("📡 Auto-fetch Live Regional Prices", value=True)
 
 if auto_momentum:

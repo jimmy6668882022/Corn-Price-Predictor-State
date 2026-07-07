@@ -19,76 +19,104 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 # ==========================================
 # AUTO DATA PIPELINE: MOMENTUM (USDA AMS API)
 # ==========================================
-@st.cache_data(ttl=0) # Temporarily set to 0 to force a live refresh every click
+@st.cache_data(ttl=3600)
 def fetch_recent_prices():
     """
-    Diagnostic version of the price fetcher. 
-    Prints exact error messages to the UI to help debug the USDA MARS data.
+    Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
+    Uses aggressive JSON flattening and text-searching to bypass API mismatches.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
     if not AMS_API_KEY:
-        return fallback_prices, "⚠️ API Key missing."
+        return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
         
     url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Data"
     
     try:
         response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
         
-        # DIAGNOSTIC 1: Server Rejection
         if response.status_code != 200:
-            return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code} - {response.text}"
+            return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code}"
             
-        records = response.json().get('results', [])
+        data = response.json()
         
-        # DIAGNOSTIC 2: Empty Report
-        if not records:
-            return fallback_prices, "⚠️ Report 3225 is currently empty or unavailable."
+        # 1. Handle API version wrappers (Lists vs Dicts)
+        if isinstance(data, list):
+            records = data
+        else:
+            records = data.get('results', [])
             
-        corn_records = []
-        for r in records:
-            # Convert everything to UPPERCASE to prevent case-sensitive mismatches
-            commodity = str(r.get("commodity", "")).upper()
-            region = str(r.get("region", "")).upper() + str(r.get("region_location", "")).upper() + str(r.get("location", "")).upper()
-            
-            if "CORN" in commodity and "EAST" in region:
-                corn_records.append(r)
+        # 2. Flatten nested 'results' arrays (USDA hides rows inside 'Report Detail' sections)
+        flat_records = []
+        for item in records:
+            if isinstance(item, dict) and 'results' in item:
+                flat_records.extend(item['results'])
+            else:
+                flat_records.append(item)
                 
-        # DIAGNOSTIC 3: Filter Failure
+        if not flat_records:
+            return fallback_prices, "⚠️ Report 3225 returned empty data."
+            
+        # 3. Aggressive Text Filter (Ignores unpredictable column names)
+        corn_records = []
+        for r in flat_records:
+            # Create a giant uppercase string of every value in the row
+            row_text = " ".join(str(v).upper() for v in r.values())
+            
+            # Look for US #2 Yellow Corn in the East region
+            if "CORN" in row_text and "EAST" in row_text:
+                # Convert keys to lowercase to grab prices safely
+                r_lower = {str(k).lower(): v for k, v in r.items()}
+                
+                # Standardize the data we care about
+                date_val = r_lower.get('published_date', r_lower.get('report_date', ''))
+                
+                # Handle varying price column names
+                p_min = r_lower.get('price_min', r_lower.get('low_price', r_lower.get('price', None)))
+                p_max = r_lower.get('price_max', r_lower.get('high_price', r_lower.get('price', None)))
+                
+                if date_val and p_min is not None and p_max is not None:
+                    corn_records.append({
+                        'date': date_val,
+                        'p_min': p_min,
+                        'p_max': p_max
+                    })
+                    
+        # Diagnostic Error: If the filter found nothing, print the exact columns available
         if len(corn_records) == 0:
-            sample_comm = records[0].get('commodity', 'N/A')
-            sample_loc = records[0].get('location', 'N/A')
-            return fallback_prices, f"⚠️ Filter failed. Found 0 East Corn rows. Example USDA row says: Commodity='{sample_comm}', Location='{sample_loc}'"
-
-        corn_records.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+            sample_keys = ", ".join(list(flat_records[0].keys()))
+            return fallback_prices, f"⚠️ Filter found 0 rows for 'East Corn'. Columns available: {sample_keys}"
+            
+        # 4. Sort newest to oldest
+        corn_records.sort(key=lambda x: x['date'], reverse=True)
+        
         unique_prices = []
         seen_dates = set()
         
         for r in corn_records:
-            date = r.get('published_date')
+            date = r['date']
             if date not in seen_dates:
-                p_min = r.get('price_min')
-                p_max = r.get('price_max')
                 try:
-                    if p_min and p_max:
-                        avg_price = (float(p_min) + float(p_max)) / 2.0
-                        unique_prices.append(round(avg_price, 2))
-                        seen_dates.add(date)
+                    avg_price = (float(r['p_min']) + float(r['p_max'])) / 2.0
+                    unique_prices.append(round(avg_price, 2))
+                    seen_dates.add(date)
                 except ValueError:
                     continue
-            
+                    
             if len(unique_prices) >= 4:
                 break
                 
-        # DIAGNOSTIC 4: Incomplete Data
         if len(unique_prices) < 4:
-            return fallback_prices, f"⚠️ Only found {len(unique_prices)} valid days of data, need 4."
+            return fallback_prices, f"⚠️ Only found {len(unique_prices)} days of data for East Corn."
             
+        # 5. Reverse to chronological order (oldest -> newest) for the momentum model
         unique_prices.reverse()
-        return ", ".join(map(str, unique_prices)), "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
+        price_str = ", ".join(map(str, unique_prices))
+        return price_str, "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
         
     except Exception as e:
-        return fallback_prices, f"⚠️ Python Error: {str(e)}"
+        return fallback_prices, f"⚠️ Script Error: {str(e)}"
+
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)

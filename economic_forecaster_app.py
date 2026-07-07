@@ -19,68 +19,76 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 # ==========================================
 # AUTO DATA PIPELINE: MOMENTUM (USDA AMS API)
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=0) # Temporarily set to 0 to force a live refresh every click
 def fetch_recent_prices():
     """
-    Fetches the last 4 unique daily/weekly cash prices from Nebraska Elevators (Report 3225).
-    Filters specifically for US #2 Yellow Corn in the East region.
+    Diagnostic version of the price fetcher. 
+    Prints exact error messages to the UI to help debug the USDA MARS data.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
-    status_msg = "⚠️ Using hardcoded baseline for recent prices."
     
     if not AMS_API_KEY:
-        return fallback_prices, "⚠️ AMS API Key missing. Using manual baseline."
+        return fallback_prices, "⚠️ API Key missing."
         
     url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Data"
     
     try:
-        # AMS API uses Basic Auth with the key as the username
         response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
-        if response.status_code == 200:
-            records = response.json().get('results', [])
-            if records:
-                # Filter strictly for Corn and the East Region
-                corn_records = []
-                for r in records:
-                    commodity = str(r.get("commodity", ""))
-                    # Check region fields (MARS uses region, location, or region_location depending on report)
-                    region = str(r.get("region", "")) + str(r.get("region_location", "")) + str(r.get("location", ""))
-                    if "Corn" in commodity and "East" in region:
-                        corn_records.append(r)
-                
-                # Sort newest to oldest
-                corn_records.sort(key=lambda x: x.get('published_date', ''), reverse=True)
-                
-                unique_prices = []
-                seen_dates = set()
-                
-                for r in corn_records:
-                    date = r.get('published_date')
-                    if date not in seen_dates:
-                        p_min = r.get('price_min')
-                        p_max = r.get('price_max')
-                        try:
-                            # Average the min and max bids across the East state region for that day
-                            if p_min and p_max:
-                                avg_price = (float(p_min) + float(p_max)) / 2.0
-                                unique_prices.append(round(avg_price, 2))
-                                seen_dates.add(date)
-                        except ValueError:
-                            continue
-                    
-                    if len(unique_prices) >= 4:
-                        break
-                
-                if len(unique_prices) >= 4:
-                    # Reverse so it reads oldest to newest (Week 1, Week 2, Week 3, Week 4)
-                    unique_prices.reverse()
-                    price_str = ", ".join(map(str, unique_prices))
-                    return price_str, "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
-    except Exception:
-        pass
         
-    return fallback_prices, status_msg
+        # DIAGNOSTIC 1: Server Rejection
+        if response.status_code != 200:
+            return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code} - {response.text}"
+            
+        records = response.json().get('results', [])
+        
+        # DIAGNOSTIC 2: Empty Report
+        if not records:
+            return fallback_prices, "⚠️ Report 3225 is currently empty or unavailable."
+            
+        corn_records = []
+        for r in records:
+            # Convert everything to UPPERCASE to prevent case-sensitive mismatches
+            commodity = str(r.get("commodity", "")).upper()
+            region = str(r.get("region", "")).upper() + str(r.get("region_location", "")).upper() + str(r.get("location", "")).upper()
+            
+            if "CORN" in commodity and "EAST" in region:
+                corn_records.append(r)
+                
+        # DIAGNOSTIC 3: Filter Failure
+        if len(corn_records) == 0:
+            sample_comm = records[0].get('commodity', 'N/A')
+            sample_loc = records[0].get('location', 'N/A')
+            return fallback_prices, f"⚠️ Filter failed. Found 0 East Corn rows. Example USDA row says: Commodity='{sample_comm}', Location='{sample_loc}'"
 
+        corn_records.sort(key=lambda x: x.get('published_date', ''), reverse=True)
+        unique_prices = []
+        seen_dates = set()
+        
+        for r in corn_records:
+            date = r.get('published_date')
+            if date not in seen_dates:
+                p_min = r.get('price_min')
+                p_max = r.get('price_max')
+                try:
+                    if p_min and p_max:
+                        avg_price = (float(p_min) + float(p_max)) / 2.0
+                        unique_prices.append(round(avg_price, 2))
+                        seen_dates.add(date)
+                except ValueError:
+                    continue
+            
+            if len(unique_prices) >= 4:
+                break
+                
+        # DIAGNOSTIC 4: Incomplete Data
+        if len(unique_prices) < 4:
+            return fallback_prices, f"⚠️ Only found {len(unique_prices)} valid days of data, need 4."
+            
+        unique_prices.reverse()
+        return ", ".join(map(str, unique_prices)), "📈 Live USDA AMS Cash Prices Fetched (East Region)!"
+        
+    except Exception as e:
+        return fallback_prices, f"⚠️ Python Error: {str(e)}"
 
 # ==========================================
 # AUTO DATA PIPELINE: SUPPLY (USDA API)

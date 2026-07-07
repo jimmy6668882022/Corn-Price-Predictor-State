@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datetime import datetime
 
 MODEL_PATH = "rf_model_state_fair.pkl"
@@ -83,8 +85,7 @@ def fetch_recent_prices():
         df = pd.DataFrame(corn_records)
         df['date'] = pd.to_datetime(df['date']).dt.date
         
-        # We don't need to mathematically average them anymore! 
-        # Just grab the newest 4 unique dates from their official list.
+        # Grab the newest 4 unique dates from their official regional list
         daily_avg = df.drop_duplicates(subset=['date']).sort_values('date', ascending=False)
         unique_prices = daily_avg['price'].round(2).tolist()[:4]
         
@@ -459,7 +460,6 @@ if view_mode == "📊 Advanced View":
 
 if st.button("🚀 Run Chained Forecast", type="primary"):
     try:
-        # Flattened validation check to prevent SyntaxErrors
         recent_prices = parse_recent_prices(recent_prices_input, window_size)
         initial_average_price = np.mean(recent_prices[-window_size:])
         forecast_rows = []

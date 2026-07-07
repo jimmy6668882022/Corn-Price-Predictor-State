@@ -39,7 +39,6 @@ def fetch_recent_prices():
     session.mount('https://', HTTPAdapter(max_retries=retries))
     
     try:
-        # Give the USDA server 30 full seconds to gather the spreadsheet
         response = session.get(url, auth=(AMS_API_KEY, ''), timeout=30)
         
         if response.status_code != 200:
@@ -62,18 +61,14 @@ def fetch_recent_prices():
         for r in flat_records:
             commodity = str(r.get('commodity', '')).upper()
             
-            # 1. Filter for Corn
             if "CORN" in commodity:
                 date_val = r.get('published_date', r.get('report_date', ''))
-                
-                # 2. Extract individual elevator prices
                 p_min = r.get('price Min')
                 p_max = r.get('price Max')
                 p_avg = r.get('avg_price')
                 
                 final_price = None
                 
-                # Use the elevator's local average if provided, otherwise calculate its midpoint
                 if p_avg is not None and str(p_avg).strip() != "":
                     final_price = float(p_avg)
                 elif p_min is not None and p_max is not None:
@@ -93,7 +88,6 @@ def fetch_recent_prices():
         if not corn_records:
             return fallback_prices, "⚠️ Found 0 Corn rows with valid numerical prices."
             
-        # 3. Regional Filter
         east_records = [row for row in corn_records if "EAST" in row['location']]
         
         if len(east_records) > 0:
@@ -103,7 +97,6 @@ def fetch_recent_prices():
             target_records = corn_records
             status_message = "📈 Live USDA AMS Cash Prices Fetched (Statewide True Mean)!"
             
-        # 4. Group by Date and mathematically average all individual elevators
         df = pd.DataFrame(target_records)
         df['date'] = pd.to_datetime(df['date']).dt.date
         
@@ -115,7 +108,6 @@ def fetch_recent_prices():
         if len(unique_prices) < 4:
             return fallback_prices, f"⚠️ Only found {len(unique_prices)} valid days of data. Need 4."
             
-        # 5. Reverse for chronological order (Week 1, Week 2, Week 3, Week 4)
         unique_prices.reverse()
         price_str = ", ".join(map(str, unique_prices))
         return price_str, status_message
@@ -411,11 +403,21 @@ if auto_momentum:
     recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", live_prices_str, disabled=True)
 else:
     recent_prices_input = st.sidebar.text_input(f"Recent Prices (enter at least {window_size})", "3.78, 3.83, 3.70, 3.84")
+    with st.sidebar.expander("🔍 Guide: Manual Price Fetching"):
+        st.markdown("""
+        1. Open the [USDA My Market News (Report 3225)](https://mymarketnews.ams.usda.gov/viewReport/3225).
+        2. **Note:** Please use the price listed for **EAST**, as the entire forecast model is built on this specific region's structural baseline.
+        3. Extract the last 4 unique daily prices and type them into the field separated by commas.
+        """)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Seasonality")
 use_auto_seasonality = st.sidebar.checkbox("Auto-fill seasonality by forecast week", value=True)
 manual_seasonality = st.sidebar.number_input("Manual Seasonality Override", value=float(seasonality_map.get(current_week, 4.50)), format="%.2f")
+
+st.sidebar.markdown("""
+💡 **Tip:** Refer to the 'Seasonality' column in your [Master Sheet for MSEF](https://docs.google.com/spreadsheets/d/1H_GvT5G7hVf1jKdgth3KPQGPs6svWit6x7ozwhnGmMA/edit?gid=0#gid=0) for the 10-year baseline average for your target week.
+""")
 
 # ==========================================
 # AUTO DATA: DEMAND FACTORS
@@ -437,7 +439,26 @@ if auto_demand:
     demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=live_ethanol, disabled=True, format="%.0f")
 else:
     demand_livestock = st.sidebar.number_input("Livestock Demand (Head)", value=2500000.0, step=10000.0, format="%.0f")
+    with st.sidebar.expander("🔍 Guide: Manual Livestock Demand"):
+        st.markdown("""
+        1. Open the [USDA QuickStats Tool](https://quickstats.nass.usda.gov/).
+        2. Apply the following strict filters:
+           - **Program:** Survey
+           - **Sector:** Animals & Products
+           - **Group:** Livestock
+           - **Commodity:** Cattle
+           - **Category:** Inventory
+           - **Data Item:** CATTLE, ON FEED - INVENTORY
+           - **Geographic Level:** State → Nebraska
+        3. Press **Get Data** and copy/paste the most recent reporting value.
+        """)
+        
     demand_ethanol = st.sidebar.number_input("Ethanol Demand (Thousand Barrels/Day)", value=990.0, step=1.0, format="%.0f")
+    with st.sidebar.expander("🔍 Guide: Manual Ethanol Demand"):
+        st.markdown("""
+        1. Head over to the official [EIA Weekly Ethanol Production Stream](https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=W_EPOOXE_YOP_R20_MBBLD&f=W).
+        2. Locate the most current week's entry on the ledger and input it above.
+        """)
 
 # ==========================================
 # AUTO DATA: SUPPLY FACTORS
@@ -465,6 +486,25 @@ else:
     is_harvesting = st.sidebar.selectbox("Is it harvest season? (0=No, 1=Yes)", options=[0, 1], index=0)
     cumulative_harvest = st.sidebar.number_input("Cumulative Harvest (Bushels)", value=0.0, step=1000000.0, format="%.0f")
     weekly_bushels = st.sidebar.number_input("Weekly Bushels Produced", value=0.0, step=1000000.0, format="%.0f")
+    
+    with st.sidebar.expander("🔍 Guide: Manual Supply Computations"):
+        st.markdown("""
+        **Step 1:** Head to the [USDA QuickStats Interface](https://quickstats.nass.usda.gov/).
+        
+        **Step 2:** Isolate via the criteria below:
+        - **Program:** Survey 
+        - **Sector:** Crops 
+        - **Commodity:** Corn 
+        - **Category:** Progress 
+        - **Data Item:** CORN, GRAIN - PROGRESS, MEASURED IN PCT HARVESTED 
+        - **State:** Nebraska
+        
+        **Step 3:** Record the exact percentage completion noted for your target observation week.
+        
+        **Step 4:** Multiply that percentage (rendered as a formal decimal) against the newest operational annual baseline production metrics (*e.g., 2,027,300,000 bushels for the 2025 seasonal harvest cyclical tracking loop*) to extract your **Cumulative Harvest**.
+        
+        **Step 5:** Compute the net raw dynamic differentiation by subtracting last week's recorded Cumulative Harvest value from this week's current result to isolate your **Weekly Bushels Produced**.
+        """)
 
 st.sidebar.markdown("---")
 clip_predictions = st.sidebar.checkbox("Cap weekly deviation at ±$0.20", value=True)
@@ -544,4 +584,5 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
         st.info("⏳ We are currently waiting for the newest/updated data to sync, or a required field is missing. Please check back later or verify your inputs.")
 
 st.markdown("---")
+st.caption("Looking for the legacy framework? Access the [Original Nebraska Corn Price Predictor Deployment V1](https://nebraska-corn-market-price-predictor.streamlit.app/) archive map.")
 st.warning("**Disclaimer:** These projections are estimates based on historical trends and current inputs. They are not guaranteed to be 100% accurate. The model cannot effectively predict outliers caused by 'black swan' events, such as extreme weather disasters, unpredictable geopolitical shifts, or sudden market crashes.")

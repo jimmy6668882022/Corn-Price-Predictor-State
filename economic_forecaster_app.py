@@ -33,7 +33,7 @@ def fetch_recent_prices():
     url = "https://marsapi.ams.usda.gov/services/v1.2/reports/3225/Report%20Detail"
     
     try:
-        response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=10)
+        response = requests.get(url, auth=(AMS_API_KEY, ''), timeout=30)
         
         if response.status_code != 200:
             return fallback_prices, f"⚠️ USDA Server Error: Code {response.status_code}"

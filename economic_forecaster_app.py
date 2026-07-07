@@ -25,7 +25,7 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 def fetch_recent_prices():
     """
     Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
-    Directly targets the USDA's official regional summary row to perfectly match the website.
+    Uses robust pandas averaging across all individual elevators for a true mathematical mean.
     """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
@@ -61,41 +61,64 @@ def fetch_recent_prices():
         corn_records = []
         for r in flat_records:
             commodity = str(r.get('commodity', '')).upper()
-            # The USDA puts the regional summary name directly in market_location_name
-            market_loc = str(r.get('market_location_name', '')).upper()
             
-            # Look EXACTLY for the official East region summary row
-            if "CORN" in commodity and market_loc == "EAST":
+            # 1. Filter for Corn
+            if "CORN" in commodity:
                 date_val = r.get('published_date', r.get('report_date', ''))
+                
+                # 2. Extract individual elevator prices
+                p_min = r.get('price Min')
+                p_max = r.get('price Max')
                 p_avg = r.get('avg_price')
                 
-                # Grab their pre-calculated official average
-                if date_val and p_avg is not None and str(p_avg).strip() != "":
+                final_price = None
+                
+                # Use the elevator's local average if provided, otherwise calculate its midpoint
+                if p_avg is not None and str(p_avg).strip() != "":
+                    final_price = float(p_avg)
+                elif p_min is not None and p_max is not None:
                     try:
-                        corn_records.append({
-                            'date': date_val,
-                            'price': float(p_avg)
-                        })
+                        final_price = (float(p_min) + float(p_max)) / 2.0
                     except ValueError:
                         pass
+                        
+                if date_val and final_price is not None:
+                    location_string = str(r.get('trade_loc', '')) + " " + str(r.get('market_location_name', ''))
+                    corn_records.append({
+                        'date': date_val,
+                        'price': final_price,
+                        'location': location_string.upper()
+                    })
                     
         if not corn_records:
-            return fallback_prices, "⚠️ Found 0 official East Region summary rows."
+            return fallback_prices, "⚠️ Found 0 Corn rows with valid numerical prices."
             
-        df = pd.DataFrame(corn_records)
+        # 3. Regional Filter
+        east_records = [row for row in corn_records if "EAST" in row['location']]
+        
+        if len(east_records) > 0:
+            target_records = east_records
+            status_message = "📈 Live USDA AMS Cash Prices Fetched (East Region True Mean)!"
+        else:
+            target_records = corn_records
+            status_message = "📈 Live USDA AMS Cash Prices Fetched (Statewide True Mean)!"
+            
+        # 4. Group by Date and mathematically average all individual elevators
+        df = pd.DataFrame(target_records)
         df['date'] = pd.to_datetime(df['date']).dt.date
         
-        # Grab the newest 4 unique dates from their official regional list
-        daily_avg = df.drop_duplicates(subset=['date']).sort_values('date', ascending=False)
+        daily_avg = df.groupby('date')['price'].mean().reset_index()
+        daily_avg = daily_avg.sort_values('date', ascending=False)
+        
         unique_prices = daily_avg['price'].round(2).tolist()[:4]
         
         if len(unique_prices) < 4:
             return fallback_prices, f"⚠️ Only found {len(unique_prices)} valid days of data. Need 4."
             
-        # Reverse for chronological order (Week 1, Week 2, Week 3, Week 4)
+        # 5. Reverse for chronological order (Week 1, Week 2, Week 3, Week 4)
         unique_prices.reverse()
         price_str = ", ".join(map(str, unique_prices))
-        return price_str, "📈 Live USDA Official Prices Fetched (East Region Summary)!"
+        return price_str, status_message
         
     except requests.exceptions.Timeout:
         return fallback_prices, "⚠️ USDA API timed out after 30 seconds. Using baseline."

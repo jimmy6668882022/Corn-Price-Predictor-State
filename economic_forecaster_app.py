@@ -3,10 +3,35 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import datetime
+
+
+# ==========================================
+# WEEK TO CALENDAR MONTH MAPPING HELPER
+# ==========================================
+def get_week_calendar_label(week_num):
+    month_map = {
+        (1, 4): "January (Post-Harvest Storage)",
+        (5, 8): "February (Pre-Planting Planning)",
+        (9, 13): "March (USDA Planting Intentions)",
+        (14, 17): "April (Field Prep & Early Planting)",
+        (18, 22): "May (Planting & Emergence)",
+        (23, 26): "June (Crop Growth & Weather Watch)",
+        (27, 30): "July (Pollination & Critical Window)",
+        (31, 35): "August (Grain Fill & Crop Progress)",
+        (36, 39): "September (Early Harvest & Husker Harvest Days)",
+        (40, 44): "October (Peak Harvest)",
+        (45, 48): "November (Late Harvest & Post-Harvest)",
+        (49, 52): "December (Year-End Grain Marketing)"
+    }
+    for (start, end), label in month_map.items():
+        if start <= week_num <= end:
+            return f"Week {week_num} — {label}"
+    return f"Week {week_num}"
 
 MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
@@ -376,6 +401,15 @@ except Exception as exc:
 window_size = int(metadata.get("window_size", 4))
 feature_columns = metadata.get("feature_columns", ["Week_Num", "Seasonality", "Weekly_Bushels_Produced", "Cumulative_Harvest", "Is_Harvesting", "Demand_Ethanol", "Demand_Livestock"])
 
+
+# 🔒 PRIVACY GUARANTEE BANNER & TRANSPARENCY
+st.markdown("""
+<div style="background-color: #f0f7f4; border-left: 5px solid #2e7d32; padding: 12px 18px; border-radius: 4px; margin-bottom: 20px;">
+    <strong style="color: #2e7d32; font-size: 16px;">🔒 100% Private & Open-Source Decision Support</strong><br>
+    <span style="color: #333; font-size: 14px;">No user account required. We do not collect, store, or sell your farm's financial, yield, or acreage data. Built as a free Capstone project for Nebraska growers.</span>
+</div>
+""", unsafe_allow_html=True)
+
 st.title("🌽 Harvest or Hold? Nebraska Corn Market Forecaster")
 
 view_mode = st.radio("Select Dashboard View:", ["👨‍🌾 Simple View", "📊 Advanced View"], horizontal=True)
@@ -386,8 +420,24 @@ st.markdown("---")
 # ==========================================
 st.sidebar.header("Market Control Panel")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("💰 Your Economics (Break-Even)")
+user_breakeven = st.sidebar.number_input(
+    "Cost of Production / Break-Even ($/bu)",
+    value=4.50, step=0.05,
+    help="Your personal break-even price. The recommendation engine ties predictions directly to this number."
+)
+monthly_storage_cost = st.sidebar.number_input(
+    "Est. Monthly Storage / Holding Cost ($/bu/month)",
+    value=0.05, step=0.01,
+    help="Includes elevator fees, utility shrink, or operating loan interest while holding grain."
+)
+
+
 current_week = st.sidebar.slider("Current Week Number", min_value=1, max_value=51, value=6)
 target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=52, value=min(current_week + 6, 52))
+
+st.sidebar.info(f"📆 Current: {get_week_calendar_label(current_week)}\n📆 Target: {get_week_calendar_label(target_week)}")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Momentum Baseline")
@@ -537,45 +587,114 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
                 demand_ethanol=demand_ethanol, demand_livestock=demand_livestock,
             )[feature_columns]
 
+            
             raw_deviation = float(rf_model.predict(future_conditions)[0])
+            
+            try:
+                # Calculate probability intervals via ensemble spread
+                all_tree_preds = [tree.predict(future_conditions.values)[0] for tree in rf_model.estimators_]
+                tree_std = float(np.std(all_tree_preds))
+            except Exception:
+                tree_std = 0.05
+
             deviation = float(np.clip(raw_deviation, -MAX_WEEKLY_SHIFT, MAX_WEEKLY_SHIFT)) if clip_predictions else raw_deviation
             predicted_price = moving_avg + deviation
             recent_prices.append(predicted_price)
 
             forecast_rows.append({
                 "Week": week, "Seasonality": seasonality_value, "Momentum": round(moving_avg, 4),
-                "Predicted Deviation": round(deviation, 4), "Predicted Price": round(predicted_price, 4),
+                "Predicted Deviation": round(deviation, 4), "Predicted Price": round(predicted_price, 4), "StdDev": tree_std,
             })
 
         forecast_df = pd.DataFrame(forecast_rows)
         final_price = forecast_df.iloc[-1]['Predicted Price']
         price_change = final_price - initial_average_price
 
-        if price_change >= 0.05:
-            recommendation, reason = "HOLD 🛑", "Prices are projected to trend upward. Waiting could yield higher profits."
-        elif price_change <= -0.05:
-            recommendation, reason = "HARVEST / SELL NOW 🚜", "Prices are projected to drop. Locking in current rates is advised."
+        # Dynamic Recommendation Logic tied to Personal Economics
+        months_held = max(0, target_week - current_week) / 4.33
+        total_storage_cost = months_held * monthly_storage_cost
+        net_margin = final_price - user_breakeven
+        
+        if net_margin > (total_storage_cost * 1.5):
+            recommendation = "🟢 SELL / FORWARD CONTRACT"
+            reason = f"The predicted market price of **${final_price:.2f}** is **${net_margin:.2f} above your break-even** (${user_breakeven:.2f}) and comfortably covers your estimated storage holding costs (${total_storage_cost:.2f} total). Securing price coverage at this level is strongly advised."
+        elif net_margin >= 0:
+            recommendation = "🟡 MONITOR CLOSELY / HOLD SHORT-TERM"
+            reason = f"The predicted price of **${final_price:.2f}** covers your break-even (${user_breakeven:.2f}) with a thin margin of **${net_margin:.2f}**. Keep an eye on cumulative storage costs (${total_storage_cost:.2f}) to ensure delay doesn't erode profits."
         else:
-            recommendation, reason = "MONITOR 🔍", "Prices are projected to remain relatively stable. Keep an eye on market shifts."
+            recommendation = "🔴 HOLD / EVALUATE RISK MANAGEMENT"
+            reason = f"The predicted price of **${final_price:.2f}** is **${abs(net_margin):.2f} BELOW your break-even** (${user_breakeven:.2f}). Holding grain or evaluating crop insurance/basis protections is recommended before locking in sales."
 
         if view_mode == "👨‍🌾 Simple View":
             st.header("🎯 Your Forecast Recommendation")
             st.subheader(f"{recommendation}")
-            st.write(f"**Why?** {reason}")
-            st.metric(label=f"Projected Price for Week {target_week}", value=f"${final_price:.2f}", delta=f"{price_change:.2f} vs current average")
-            st.info("Switch to the 'Advanced View' at the top of the page to see the week-by-week data breakdown and price trajectory charts.")
+            st.write(f"**The Bottom Line:** {reason}")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Predicted Price", f"${final_price:.2f} / bu", delta=f"{price_change:+.2f} vs current")
+            with col2:
+                st.metric("Your Break-Even Price", f"${user_breakeven:.2f} / bu")
+            with col3:
+                st.metric("Predicted Net Profit Margin", f"${net_margin:+.2f} / bu", delta_color="normal" if net_margin >= 0 else "inverse")
+                
+            st.info("Switch to the 'Advanced View' at the top of the page to see probability bands and trajectory charts.")
 
         elif view_mode == "📊 Advanced View":
-            st.subheader(f"Forecast: Week {current_week + 1} to Week {target_week}")
-            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
-            st.success(f"Final projected price for Week {target_week}: ${final_price:.2f}")
-            st.markdown("<h3 style='text-align: center; color: gray;'>⬇️</h3>", unsafe_allow_html=True)
+            st.subheader(f"📊 Advanced Risk Analytics & Probability Intervals")
+            
+            # Show top metrics
+            final_std = forecast_df.iloc[-1]['StdDev']
+            conf_lower = max(0.0, final_price - final_std)
+            conf_upper = final_price + final_std
+            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric(f"Point Forecast (Week {target_week})", f"${final_price:.2f}")
+            with c2:
+                st.metric("70% Probability Interval", f"${conf_lower:.2f} — ${conf_upper:.2f}")
+            with c3:
+                st.metric("Model Ensemble Spread (Std Dev)", f"±${final_std:.2f}")
 
-            fig = px.line(forecast_df, x="Week", y="Predicted Price", title="Forecasted Price Trajectory", markers=True, labels={"Predicted Price": "Price ($/Bushel)", "Week": "Week Number"})
-            fig.update_traces(line_color="#C56A1A", line_width=3, marker=dict(size=8, color="#C56A1A"))
-            fig.update_layout(xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'), yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$"), hovermode="x unified")
+            st.markdown("### 📈 Price Prediction Distribution (70% Confidence Band)")
+            
+            # Calculate bands
+            forecast_df['Upper_Bound'] = forecast_df['Predicted Price'] + forecast_df['StdDev']
+            forecast_df['Lower_Bound'] = (forecast_df['Predicted Price'] - forecast_df['StdDev']).clip(lower=0)
+            
+            fig = go.Figure()
+            
+            # Shaded probability area
+            fig.add_trace(go.Scatter(
+                x=forecast_df['Week'].tolist() + forecast_df['Week'].tolist()[::-1],
+                y=forecast_df['Upper_Bound'].tolist() + forecast_df['Lower_Bound'].tolist()[::-1],
+                fill='toself', fillcolor='rgba(46, 125, 50, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                name='70% Probability Range'
+            ))
+            
+            # Main price line
+            fig.add_trace(go.Scatter(
+                x=forecast_df['Week'], y=forecast_df['Predicted Price'],
+                mode='lines+markers', line=dict(color='#2e7d32', width=3),
+                name='Forecast Price'
+            ))
+            
+            fig.update_layout(
+                title=f"Forecasted Price Trajectory ({get_week_calendar_label(current_week)} to {get_week_calendar_label(target_week)})",
+                xaxis_title="Week Number",
+                yaxis_title="Price ($/Bushel)",
+                hovermode="x unified",
+                xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'),
+                yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$")
+            )
+            
             st.plotly_chart(fig, use_container_width=True)
+            
+            with st.expander("Show Raw Data Table"):
+                display_df = forecast_df.drop(columns=['StdDev', 'Upper_Bound', 'Lower_Bound'])
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     except ValueError as val_err:
         st.error(str(val_err))

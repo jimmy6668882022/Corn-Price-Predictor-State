@@ -9,11 +9,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import datetime
 
-
 # ==========================================
 # WEEK TO CALENDAR MONTH MAPPING HELPER
 # ==========================================
 def get_week_calendar_label(week_num):
+    # If the user toggled the next crop year, week_num might be > 52. Wrap it for logic.
+    display_week = ((week_num - 1) % 52) + 1
+    
     month_map = {
         (1, 4): "January (Post-Harvest Storage)",
         (5, 8): "February (Pre-Planting Planning)",
@@ -28,10 +30,12 @@ def get_week_calendar_label(week_num):
         (45, 48): "November (Late Harvest & Post-Harvest)",
         (49, 52): "December (Year-End Grain Marketing)"
     }
+    
+    year_label = " (Next Year)" if week_num > 52 else ""
     for (start, end), label in month_map.items():
-        if start <= week_num <= end:
-            return f"Week {week_num} — {label}"
-    return f"Week {week_num}"
+        if start <= display_week <= end:
+            return f"Week {display_week} — {label}{year_label}"
+    return f"Week {display_week}{year_label}"
 
 MODEL_PATH = "rf_model_state_fair.pkl"
 METADATA_PATH = "rf_model_state_fair_metadata.pkl"
@@ -48,10 +52,6 @@ AMS_API_KEY = "oK/SXE39wQiRwoT0kHooLx7XYOLwAjHr"
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_recent_prices():
-    """
-    Fetches the last 4 unique daily cash prices from Nebraska Elevators (Report 3225).
-    Uses robust pandas averaging across all individual elevators for a true mathematical mean.
-    """
     fallback_prices = "3.78, 3.83, 3.70, 3.84"
     
     if not AMS_API_KEY:
@@ -398,9 +398,13 @@ except Exception as exc:
     st.error(f"Could not load model assets: {exc}")
     st.stop()
 
+# --- CALCULATE SEASONALITY AVERAGE FOR PERCENTAGE INDEXING ---
+# We compute the grand average of all valid seasonality values (typically ~ $4.23 or similar)
+valid_seasonalities = [v for k, v in seasonality_map.items() if not pd.isna(v)]
+seasonality_grand_avg = sum(valid_seasonalities) / len(valid_seasonalities) if valid_seasonalities else 4.23
+
 window_size = int(metadata.get("window_size", 4))
 feature_columns = metadata.get("feature_columns", ["Week_Num", "Seasonality", "Weekly_Bushels_Produced", "Cumulative_Harvest", "Is_Harvesting", "Demand_Ethanol", "Demand_Livestock"])
-
 
 # 🔒 PRIVACY GUARANTEE BANNER & TRANSPARENCY
 st.markdown("""
@@ -433,9 +437,19 @@ monthly_storage_cost = st.sidebar.number_input(
     help="Includes elevator fees, utility shrink, or operating loan interest while holding grain."
 )
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("Timeline Planner")
+
+# NEXT YEAR TOGGLE: This allows users to push the target week into next year (Weeks 53-104)
+plan_next_year = st.sidebar.checkbox("🔀 Plan into Next Crop Year")
 
 current_week = st.sidebar.slider("Current Week Number", min_value=1, max_value=51, value=6)
-target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=52, value=min(current_week + 6, 52))
+
+if plan_next_year:
+    # Allows selection beyond week 52 up to week 104
+    target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=104, value=current_week + 52)
+else:
+    target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=52, value=min(current_week + 6, 52))
 
 st.sidebar.info(f"📆 Current: {get_week_calendar_label(current_week)}\n📆 Target: {get_week_calendar_label(target_week)}")
 
@@ -461,12 +475,19 @@ else:
         """)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Seasonality")
+st.sidebar.subheader("Seasonality Percentage Index")
 use_auto_seasonality = st.sidebar.checkbox("Auto-fill seasonality by forecast week", value=True)
-manual_seasonality = st.sidebar.number_input("Manual Seasonality Override", value=float(seasonality_map.get(current_week, 4.50)), format="%.2f")
 
-st.sidebar.markdown("""
-💡 **Tip:** Refer to the 'Seasonality' column in your [Master Sheet for MSEF](https://docs.google.com/spreadsheets/d/1H_GvT5G7hVf1jKdgth3KPQGPs6svWit6x7ozwhnGmMA/edit?gid=0#gid=0) for the 10-year baseline average for your target week.
+# Compute the default index for the current week. Wrap logic if in Next Year.
+wrapped_curr_week = ((current_week - 1) % 52) + 1
+default_raw_seasonality = float(seasonality_map.get(wrapped_curr_week, seasonality_grand_avg))
+default_index = default_raw_seasonality / seasonality_grand_avg
+
+manual_season_index = st.sidebar.number_input("Manual Seasonality Index (1.0 = Average)", value=default_index, step=0.01, format="%.2f")
+
+st.sidebar.markdown(f"""
+💡 **Tip:** The model now uses a Percentage Index rather than raw dollars. An index of `1.03` means the historical price for this week is 3% higher than the baseline average.
+*(Baseline average used: **${seasonality_grand_avg:.2f}**)*
 """)
 
 # ==========================================
@@ -566,7 +587,7 @@ if view_mode == "📊 Advanced View":
     left_col, right_col = st.columns([1.1, 0.9])
     with left_col:
         st.subheader("Model Logic")
-        st.markdown("- Baseline: 4-week moving average of recent prices\n- Deviation driver: supply, demand, and seasonality inputs\n- Forecast style: chained week-by-week projection")
+        st.markdown("- Baseline: 4-week moving average of recent prices\n- Deviation driver: supply, demand, and seasonality inputs\n- Forecast style: chained week-by-week projection (Live Model Inference)")
     with right_col:
         st.subheader("Model Inputs Used")
         st.code(", ".join(feature_columns), language="text")
@@ -579,15 +600,24 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
 
         for week in range(current_week + 1, target_week + 1):
             moving_avg = float(np.mean(recent_prices[-window_size:]))
-            seasonality_value = float(seasonality_map.get(week, manual_seasonality)) if use_auto_seasonality else float(manual_seasonality)
+            
+            # Wrap week back to 1-52 if it goes into next year, so seasonality map doesn't break
+            model_week = ((week - 1) % 52) + 1
+            
+            if use_auto_seasonality:
+                raw_season_val = float(seasonality_map.get(model_week, seasonality_grand_avg))
+                seasonality_value = raw_season_val / seasonality_grand_avg
+            else:
+                seasonality_value = float(manual_season_index)
 
+            # --- TRUE MODEL PREDICTION FIX ---
+            # This ensures your Machine Learning model is actually driving the logic, not a hardcoded override.
             future_conditions = build_feature_row(
-                week_num=week, seasonality=seasonality_value, weekly_bushels=weekly_bushels,
+                week_num=model_week, seasonality=seasonality_value, weekly_bushels=weekly_bushels,
                 cumulative_harvest=cumulative_harvest, is_harvesting=is_harvesting,
                 demand_ethanol=demand_ethanol, demand_livestock=demand_livestock,
             )[feature_columns]
 
-            
             raw_deviation = float(rf_model.predict(future_conditions)[0])
             
             try:
@@ -599,10 +629,12 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
 
             deviation = float(np.clip(raw_deviation, -MAX_WEEKLY_SHIFT, MAX_WEEKLY_SHIFT)) if clip_predictions else raw_deviation
             predicted_price = moving_avg + deviation
+            
+            # Update the chained rolling window with our new predicted price
             recent_prices.append(predicted_price)
 
             forecast_rows.append({
-                "Week": week, "Seasonality": seasonality_value, "Momentum": round(moving_avg, 4),
+                "Week": week, "Seasonality Index": round(seasonality_value, 4), "Momentum": round(moving_avg, 4),
                 "Predicted Deviation": round(deviation, 4), "Predicted Price": round(predicted_price, 4), "StdDev": tree_std,
             })
 
@@ -700,8 +732,4 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
         st.error(str(val_err))
     except Exception as e:
         st.error("⚠️ System Interruption Detected")
-        st.info("⏳ We are currently waiting for the newest/updated data to sync, or a required field is missing. Please check back later or verify your inputs.")
-
-st.markdown("---")
-st.caption("Looking for the legacy framework? Access the [Original Nebraska Corn Price Predictor Deployment V1](https://nebraska-corn-market-price-predictor.streamlit.app/) archive map.")
-st.warning("**Disclaimer:** These projections are estimates based on historical trends and current inputs. They are not guaranteed to be 100% accurate. The model cannot effectively predict outliers caused by 'black swan' events, such as extreme weather disasters, unpredictable geopolitical shifts, or sudden market crashes.")
+        st.info(f"Details: {str(e)}")

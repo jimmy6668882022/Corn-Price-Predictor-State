@@ -399,7 +399,6 @@ except Exception as exc:
     st.stop()
 
 # --- CALCULATE SEASONALITY AVERAGE FOR PERCENTAGE INDEXING ---
-# We compute the grand average of all valid seasonality values (typically ~ $4.23 or similar)
 valid_seasonalities = [v for k, v in seasonality_map.items() if not pd.isna(v)]
 seasonality_grand_avg = sum(valid_seasonalities) / len(valid_seasonalities) if valid_seasonalities else 4.23
 
@@ -446,7 +445,6 @@ plan_next_year = st.sidebar.checkbox("🔀 Plan into Next Crop Year")
 current_week = st.sidebar.slider("Current Week Number", min_value=1, max_value=51, value=6)
 
 if plan_next_year:
-    # Allows selection beyond week 52 up to week 104
     target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=104, value=current_week + 52)
 else:
     target_week = st.sidebar.slider("Target Forecast Week", min_value=current_week + 1, max_value=52, value=min(current_week + 6, 52))
@@ -611,14 +609,19 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
                 seasonality_value = float(manual_season_index)
 
             # --- TRUE MODEL PREDICTION FIX ---
-            # This ensures your Machine Learning model is actually driving the logic, not a hardcoded override.
             future_conditions = build_feature_row(
                 week_num=model_week, seasonality=seasonality_value, weekly_bushels=weekly_bushels,
                 cumulative_harvest=cumulative_harvest, is_harvesting=is_harvesting,
                 demand_ethanol=demand_ethanol, demand_livestock=demand_livestock,
             )[feature_columns]
 
-            raw_deviation = float(rf_model.predict(future_conditions)[0])
+            raw_model_output = float(rf_model.predict(future_conditions)[0])
+            
+            # Automatically detect if the model is predicting an absolute price (e.g., $4.10) or a deviation (e.g., -$0.10)
+            if raw_model_output > 1.0:
+                raw_deviation = raw_model_output - moving_avg
+            else:
+                raw_deviation = raw_model_output
             
             try:
                 # Calculate probability intervals via ensemble spread
@@ -627,6 +630,7 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
             except Exception:
                 tree_std = 0.05
 
+            # Apply the +/- $0.20 limit ONLY to the true deviation
             deviation = float(np.clip(raw_deviation, -MAX_WEEKLY_SHIFT, MAX_WEEKLY_SHIFT)) if clip_predictions else raw_deviation
             predicted_price = moving_avg + deviation
             
@@ -721,39 +725,36 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
                 xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'),
                 yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$")
             )
-
-
-# Display chart
+            
             st.plotly_chart(fig, use_container_width=True)
             
-            # Show raw data table
             with st.expander("Show Raw Data Table"):
                 display_df = forecast_df.drop(columns=['StdDev', 'Upper_Bound', 'Lower_Bound'])
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-            # ==========================================
-            # HISTORICAL MARKET CONTEXT SECTION
-            # ==========================================
-            st.markdown("---")
-            st.subheader("📜 Historical Market Context: Eastern Nebraska")
+        # ==========================================
+        # HISTORICAL MARKET CONTEXT SECTION
+        # ==========================================
+        st.markdown("---")
+        st.subheader("📜 Historical Market Context: Eastern Nebraska")
 
-            # Display the historical price trend image
-            try:
-                st.image(
-                    "eastern_nebraska_historical_corn_prices.png", 
-                    caption="Historical Corn Prices in Eastern Nebraska (2016 - 2026)",
-                    use_container_width=True
-                )
-            except Exception:
-                st.warning("⚠️ Historical price chart image (`eastern_nebraska_historical_corn_prices.png`) not found in directory.")
-
-            # Explanatory text under the chart
-            st.info(
-                "**Market Insight:** Historical price trends demonstrate clear seasonal movements driven "
-                "by harvest pressure, storage cycles, and spring/summer planting uncertainties. "
-                "The model integrates these long-term historical dynamics alongside current live supply/demand signals "
-                "to baseline its forward projections."
+        # Display the historical price trend image
+        try:
+            st.image(
+                "eastern_nebraska_historical_corn_prices.png", 
+                caption="Historical Corn Prices in Eastern Nebraska (2016 - 2026)",
+                use_container_width=True
             )
+        except Exception:
+            st.warning("⚠️ Historical price chart image (`eastern_nebraska_historical_corn_prices.png`) not found in directory.")
+
+        # Explanatory text under the chart
+        st.info(
+            "**Market Insight:** Historical price trends demonstrate clear seasonal movements driven "
+            "by harvest pressure, storage cycles, and spring/summer planting uncertainties. "
+            "The model integrates these long-term historical dynamics alongside current live supply/demand signals "
+            "to baseline its forward projections."
+        )
 
     except ValueError as val_err:
         st.error(str(val_err))
@@ -761,14 +762,6 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
         st.error("⚠️ System Interruption Detected")
         st.info(f"Details: {str(e)}")
 
-            st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("Show Raw Data Table"):
-                display_df = forecast_df.drop(columns=['StdDev', 'Upper_Bound', 'Lower_Bound'])
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    except ValueError as val_err:
-        st.error(str(val_err))
-    except Exception as e:
-        st.error("⚠️ System Interruption Detected")
-        st.info(f"Details: {str(e)}")
+st.markdown("---")
+st.caption("Looking for the legacy framework? Access the [Original Nebraska Corn Price Predictor Deployment V1](https://nebraska-corn-market-price-predictor.streamlit.app/) archive map.")
+st.warning("**Disclaimer:** These projections are estimates based on historical trends and current inputs. They are not guaranteed to be 100% accurate. The model cannot effectively predict outliers caused by 'black swan' events, such as extreme weather disasters, unpredictable geopolitical shifts, or sudden market crashes.")

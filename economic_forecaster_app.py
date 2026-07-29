@@ -721,7 +721,31 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
                 xaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)'),
                 yaxis=dict(showgrid=True, gridcolor='rgba(200, 200, 200, 0.2)', tickprefix="$")
             )
-            
+
+
+            # ==========================================
+# HISTORICAL MARKET CONTEXT SECTION
+# ==========================================
+st.markdown("---")
+st.subheader("📜 Historical Market Context: Eastern Nebraska")
+
+# Display the historical price trend image
+try:
+    st.image(
+        "eastern_nebraska_historical_corn_prices.png", 
+        caption="Historical Corn Prices in eastern Nebraska (2016 - 2026)",
+        use_column_width=True
+    )
+except Exception:
+    st.warning("⚠️ Historical price chart image (`eastern_nebraska_historical_corn_prices.png`) not found in directory.")
+
+# Explanatory text under the chart
+st.info(
+    "**Market Insight:** Historical price trends demonstrate clear seasonal movements driven "
+    "by harvest pressure, storage cycles, and spring/summer planting uncertainties. "
+    "The model integrates these long-term historical dynamics alongside current live supply/demand signals "
+    "to baseline its forward projections."
+)
             st.plotly_chart(fig, use_container_width=True)
             
             with st.expander("Show Raw Data Table"):

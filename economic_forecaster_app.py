@@ -723,29 +723,44 @@ if st.button("🚀 Run Chained Forecast", type="primary"):
             )
 
 
+# Display chart
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show raw data table
+            with st.expander("Show Raw Data Table"):
+                display_df = forecast_df.drop(columns=['StdDev', 'Upper_Bound', 'Lower_Bound'])
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+
             # ==========================================
-# HISTORICAL MARKET CONTEXT SECTION
-# ==========================================
-st.markdown("---")
-st.subheader("📜 Historical Market Context: Eastern Nebraska")
+            # HISTORICAL MARKET CONTEXT SECTION
+            # ==========================================
+            st.markdown("---")
+            st.subheader("📜 Historical Market Context: Eastern Nebraska")
 
-# Display the historical price trend image
-try:
-    st.image(
-        "eastern_nebraska_historical_corn_prices.png", 
-        caption="Historical Corn Prices in eastern Nebraska (2016 - 2026)",
-        use_column_width=True
-    )
-except Exception:
-    st.warning("⚠️ Historical price chart image (`eastern_nebraska_historical_corn_prices.png`) not found in directory.")
+            # Display the historical price trend image
+            try:
+                st.image(
+                    "eastern_nebraska_historical_corn_prices.png", 
+                    caption="Historical Corn Prices in Eastern Nebraska (2016 - 2026)",
+                    use_container_width=True
+                )
+            except Exception:
+                st.warning("⚠️ Historical price chart image (`eastern_nebraska_historical_corn_prices.png`) not found in directory.")
 
-# Explanatory text under the chart
-st.info(
-    "**Market Insight:** Historical price trends demonstrate clear seasonal movements driven "
-    "by harvest pressure, storage cycles, and spring/summer planting uncertainties. "
-    "The model integrates these long-term historical dynamics alongside current live supply/demand signals "
-    "to baseline its forward projections."
-)
+            # Explanatory text under the chart
+            st.info(
+                "**Market Insight:** Historical price trends demonstrate clear seasonal movements driven "
+                "by harvest pressure, storage cycles, and spring/summer planting uncertainties. "
+                "The model integrates these long-term historical dynamics alongside current live supply/demand signals "
+                "to baseline its forward projections."
+            )
+
+    except ValueError as val_err:
+        st.error(str(val_err))
+    except Exception as e:
+        st.error("⚠️ System Interruption Detected")
+        st.info(f"Details: {str(e)}")
+
             st.plotly_chart(fig, use_container_width=True)
             
             with st.expander("Show Raw Data Table"):
